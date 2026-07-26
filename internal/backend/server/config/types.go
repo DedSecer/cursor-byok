@@ -22,12 +22,15 @@ const (
 
 type ModelAdapterConfig struct {
 	ID                          string `json:"id,omitempty" yaml:"-"`
+	SourceProviderID            string `json:"sourceProviderId,omitempty" yaml:"sourceProviderId,omitempty"`
+	SourceProviderName          string `json:"sourceProviderName,omitempty" yaml:"sourceProviderName,omitempty"`
 	DisplayName                 string `json:"displayName" yaml:"displayName"`
 	Type                        string `json:"type" yaml:"type"`
 	BaseURL                     string `json:"baseURL" yaml:"baseURL"`
 	APIKey                      string `json:"apiKey" yaml:"apiKey"`
 	TooltipData                 string `json:"tooltipData" yaml:"tooltipData"`
 	ModelID                     string `json:"modelID" yaml:"modelID"`
+	PricingModel                string `json:"pricingModel,omitempty" yaml:"pricingModel,omitempty"`
 	ReasoningEffort             string `json:"reasoningEffort" yaml:"reasoningEffort"`
 	OpenAIEndpoint              string `json:"openAIEndpoint" yaml:"openAIEndpoint"`
 	OpenAIExtraParamsEnabled    bool   `json:"openAIExtraParamsEnabled" yaml:"openAIExtraParamsEnabled"`
@@ -117,12 +120,15 @@ func NormalizeModelAdapterConfigs(input []ModelAdapterConfig) ([]ModelAdapterCon
 		}
 		nextType := normalizeModelAdapterType(item.Type)
 		next := ModelAdapterConfig{
+			SourceProviderID:     strings.TrimSpace(item.SourceProviderID),
+			SourceProviderName:   strings.TrimSpace(item.SourceProviderName),
 			DisplayName:          strings.TrimSpace(item.DisplayName),
 			Type:                 nextType,
 			BaseURL:              baseURL,
 			APIKey:               strings.TrimSpace(item.APIKey),
 			TooltipData:          strings.TrimSpace(item.TooltipData),
 			ModelID:              strings.TrimSpace(item.ModelID),
+			PricingModel:         strings.TrimSpace(item.PricingModel),
 			ReasoningEffort:      normalizeReasoningEffort(item.ReasoningEffort),
 			OpenAIEndpoint:       modelchannel.NormalizeOpenAIEndpoint(item.Type, item.OpenAIEndpoint),
 			ContextWindowTokens:  normalizeMaxCompletionTokens(item.ContextWindowTokens),
@@ -171,6 +177,12 @@ func NormalizeModelAdapterConfigs(input []ModelAdapterConfig) ([]ModelAdapterCon
 			return nil, errors.New("模型适配器 anthropicThinkingEffort 仅支持 low、medium、high、xhigh、max")
 		}
 		next.ID = modelchannel.BuildChannelID(next.BaseURL, next.ModelID, next.APIKey, next.DisplayName, next.OpenAIEndpoint)
+		if next.SourceProviderID == "" {
+			next.SourceProviderID = next.ID
+		}
+		if next.SourceProviderName == "" {
+			next.SourceProviderName = next.DisplayName
+		}
 		if _, exists := seenChannelIDs[next.ID]; exists {
 			return nil, errors.New("模型适配器渠道不能重复，请检查 url、modelID、apiKey、displayName、endpoint 组合")
 		}

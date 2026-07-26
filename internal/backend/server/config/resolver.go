@@ -44,6 +44,8 @@ func resolveModelAdapterChannel(adapters []ModelAdapterConfig, requestedModel st
 
 	resolved := &legacyruntime.ResolvedChannel{
 		ID:                          strings.TrimSpace(matched.ID),
+		SourceProviderID:            strings.TrimSpace(matched.SourceProviderID),
+		SourceProviderName:          strings.TrimSpace(matched.SourceProviderName),
 		Name:                        strings.TrimSpace(matched.DisplayName),
 		GroupName:                   "local",
 		Code:                        strings.TrimSpace(matched.ID),
@@ -51,6 +53,7 @@ func resolveModelAdapterChannel(adapters []ModelAdapterConfig, requestedModel st
 		BaseURL:                     strings.TrimSpace(matched.BaseURL),
 		APIKey:                      strings.TrimSpace(matched.APIKey),
 		Model:                       strings.TrimSpace(matched.ModelID),
+		PricingModel:                strings.TrimSpace(matched.PricingModel),
 		OpenAIEndpoint:              strings.TrimSpace(matched.OpenAIEndpoint),
 		OpenAIExtraParamsEnabled:    matched.OpenAIExtraParamsEnabled,
 		OpenAIExtraParamsJSON:       strings.TrimSpace(matched.OpenAIExtraParamsJSON),

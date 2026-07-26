@@ -9,11 +9,20 @@ import (
 const (
 	appDirName       = ".cursor-local-assistant-v2"
 	legacyAppDirName = ".cursor-local-assistant"
+	rootDirEnv       = "CC_SWITCH_CURSOR_DATA_DIR"
 )
 
-// RootDir 返回应用配置根目录。
+// RootDir 返回应用配置根目录。sidecar 通过环境变量使用 CC Switch 管理的
+// 独立目录，避免读取或迁移原 Cursor 助手的用户配置。
 func RootDir() string {
+	if override := strings.TrimSpace(os.Getenv(rootDirEnv)); override != "" {
+		return filepath.Clean(override)
+	}
 	return appRootDir(appDirName)
+}
+
+func UsesManagedRoot() bool {
+	return strings.TrimSpace(os.Getenv(rootDirEnv)) != ""
 }
 
 func legacyRootDir() string {

@@ -13,15 +13,20 @@ import (
 )
 
 type turnUsageSnapshot struct {
-	Provider          string
-	Model             string
-	InputTokens       int64
-	OutputTokens      int64
-	CacheReadTokens   int64
-	CacheWriteTokens  int64
-	UsagePresent      bool
-	CacheReadPresent  bool
-	CacheWritePresent bool
+	SourceProviderID   string
+	SourceProviderName string
+	ChannelID          string
+	RequestModel       string
+	PricingModel       string
+	Provider           string
+	Model              string
+	InputTokens        int64
+	OutputTokens       int64
+	CacheReadTokens    int64
+	CacheWriteTokens   int64
+	UsagePresent       bool
+	CacheReadPresent   bool
+	CacheWritePresent  bool
 }
 
 func (snapshot turnUsageSnapshot) hasAny() bool {
@@ -340,17 +345,46 @@ func (service *Service) recordTurnUsageSnapshot(stream *ActiveStream, conversati
 	if strings.TrimSpace(usage.Model) != "" {
 		modelName = strings.TrimSpace(usage.Model)
 	}
+	requestModel := strings.TrimSpace(usage.RequestModel)
+	if requestModel == "" {
+		requestModel = strings.TrimSpace(modelID)
+	}
+	pricingModel := strings.TrimSpace(usage.PricingModel)
+	if pricingModel == "" {
+		pricingModel = modelName
+	}
+	durationMS := int64(0)
+	if !startedAt.IsZero() && lastEventAt.After(startedAt) {
+		durationMS = lastEventAt.Sub(startedAt).Milliseconds()
+	}
+	statusCode := 200
+	if strings.TrimSpace(status) != "completed" {
+		statusCode = 502
+	}
 	effectiveModelCallID := firstNonEmpty(strings.TrimSpace(modelCallID), strings.TrimSpace(requestID))
 	if service.usageStore != nil {
 		if err := service.usageStore.UpsertEvent(usageFileEvent{
-			EventID:          usageEventID(requestID, effectiveModelCallID),
-			Kind:             usageEventKindProvider,
-			At:               lastEventAt,
-			InputTokens:      usage.InputTokens,
-			OutputTokens:     usage.OutputTokens,
-			CacheReadTokens:  usage.CacheReadTokens,
-			CacheWriteTokens: usage.CacheWriteTokens,
-			UsagePresent:     usage.UsagePresent,
+			EventID:            usageEventID(requestID, effectiveModelCallID),
+			Kind:               usageEventKindProvider,
+			Status:             strings.TrimSpace(status),
+			SourceProviderID:   strings.TrimSpace(usage.SourceProviderID),
+			SourceProviderName: strings.TrimSpace(usage.SourceProviderName),
+			ProviderType:       provider,
+			ChannelID:          strings.TrimSpace(usage.ChannelID),
+			RequestModel:       requestModel,
+			Model:              modelName,
+			PricingModel:       pricingModel,
+			StatusCode:         statusCode,
+			Error:              strings.TrimSpace(errorText),
+			LatencyMS:          durationMS,
+			DurationMS:         durationMS,
+			IsStreaming:        true,
+			At:                 lastEventAt,
+			InputTokens:        usage.InputTokens,
+			OutputTokens:       usage.OutputTokens,
+			CacheReadTokens:    usage.CacheReadTokens,
+			CacheWriteTokens:   usage.CacheWriteTokens,
+			UsagePresent:       usage.UsagePresent,
 		}); err != nil {
 			return err
 		}

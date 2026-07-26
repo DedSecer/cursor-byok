@@ -464,6 +464,15 @@ func (service *Service) applyProviderModelEvent(stream *ActiveStream, event mode
 		return nil
 	}
 	stream.mu.Lock()
+	if strings.TrimSpace(event.SourceProviderID) != "" {
+		stream.ProviderUsage.SourceProviderID = strings.TrimSpace(event.SourceProviderID)
+		stream.ProviderUsage.SourceProviderName = strings.TrimSpace(event.SourceProviderName)
+		stream.ProviderUsage.ChannelID = strings.TrimSpace(event.ChannelID)
+		stream.ProviderUsage.RequestModel = strings.TrimSpace(event.RequestModel)
+		stream.ProviderUsage.PricingModel = strings.TrimSpace(event.PricingModel)
+		stream.ProviderUsage.Provider = strings.TrimSpace(event.Provider)
+		stream.ProviderUsage.Model = strings.TrimSpace(event.Model)
+	}
 	requestID := stream.RequestID
 	conversationID := stream.ConversationID
 	turnSeq := stream.TurnSeq
@@ -592,15 +601,20 @@ func (service *Service) applyProviderModelEvent(stream *ActiveStream, event mode
 		stream.mu.Lock()
 		stream.ProviderFinishReason = strings.TrimSpace(event.FinishReason)
 		stream.ProviderUsage = turnUsageSnapshot{
-			Provider:          event.Provider,
-			Model:             event.Model,
-			InputTokens:       event.InputTokens,
-			OutputTokens:      event.OutputTokens,
-			CacheReadTokens:   event.CacheReadTokens,
-			CacheWriteTokens:  event.CacheWriteTokens,
-			UsagePresent:      event.UsagePresent,
-			CacheReadPresent:  event.CacheReadPresent,
-			CacheWritePresent: event.CacheWritePresent,
+			SourceProviderID:   event.SourceProviderID,
+			SourceProviderName: event.SourceProviderName,
+			ChannelID:          event.ChannelID,
+			RequestModel:       event.RequestModel,
+			PricingModel:       event.PricingModel,
+			Provider:           event.Provider,
+			Model:              event.Model,
+			InputTokens:        event.InputTokens,
+			OutputTokens:       event.OutputTokens,
+			CacheReadTokens:    event.CacheReadTokens,
+			CacheWriteTokens:   event.CacheWriteTokens,
+			UsagePresent:       event.UsagePresent,
+			CacheReadPresent:   event.CacheReadPresent,
+			CacheWritePresent:  event.CacheWritePresent,
 		}
 		stream.UpdatedAt = time.Now().UTC()
 		stream.mu.Unlock()

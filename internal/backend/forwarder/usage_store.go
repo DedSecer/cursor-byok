@@ -1,6 +1,7 @@
 package forwarder
 
 import (
+	"bufio"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,7 +13,8 @@ import (
 
 const (
 	usageFileName          = "usage.json"
-	usageFileSchemaVersion = 2
+	usageJournalSuffix     = ".events.jsonl"
+	usageFileSchemaVersion = 3
 	usageRecentEventLimit  = 500
 
 	usageEventKindProvider = "provider_call"
@@ -21,12 +23,14 @@ const (
 )
 
 type UsageFileStore struct {
-	path string
+	path        string
+	journalPath string
 }
 
 type usageFileDocument struct {
 	SchemaVersion int                       `json:"schema_version"`
 	UpdatedAt     time.Time                 `json:"updated_at"`
+	NextSequence  int64                     `json:"next_sequence"`
 	Totals        usageFileTotals           `json:"totals"`
 	Daily         []usageFileDaily          `json:"daily"`
 	RecentEvents  []usageFileEvent          `json:"recent_events"`
@@ -59,16 +63,30 @@ type usageFileDaily struct {
 }
 
 type usageFileEvent struct {
-	EventID          string    `json:"event_id"`
-	Kind             string    `json:"kind,omitempty"`
-	Status           string    `json:"status,omitempty"`
-	At               time.Time `json:"at"`
-	InputTokens      int64     `json:"input_tokens"`
-	OutputTokens     int64     `json:"output_tokens"`
-	CacheReadTokens  int64     `json:"cache_read_tokens"`
-	CacheWriteTokens int64     `json:"cache_write_tokens"`
-	TotalTokens      int64     `json:"total_tokens"`
-	UsagePresent     bool      `json:"usage_present"`
+	Sequence           int64     `json:"sequence"`
+	EventID            string    `json:"event_id"`
+	Kind               string    `json:"kind,omitempty"`
+	Status             string    `json:"status,omitempty"`
+	SourceProviderID   string    `json:"source_provider_id,omitempty"`
+	SourceProviderName string    `json:"source_provider_name,omitempty"`
+	ProviderType       string    `json:"provider_type,omitempty"`
+	ChannelID          string    `json:"channel_id,omitempty"`
+	RequestModel       string    `json:"request_model,omitempty"`
+	Model              string    `json:"model,omitempty"`
+	PricingModel       string    `json:"pricing_model,omitempty"`
+	StatusCode         int       `json:"status_code,omitempty"`
+	Error              string    `json:"error,omitempty"`
+	LatencyMS          int64     `json:"latency_ms,omitempty"`
+	FirstTokenMS       int64     `json:"first_token_ms,omitempty"`
+	DurationMS         int64     `json:"duration_ms,omitempty"`
+	IsStreaming        bool      `json:"is_streaming"`
+	At                 time.Time `json:"at"`
+	InputTokens        int64     `json:"input_tokens"`
+	OutputTokens       int64     `json:"output_tokens"`
+	CacheReadTokens    int64     `json:"cache_read_tokens"`
+	CacheWriteTokens   int64     `json:"cache_write_tokens"`
+	TotalTokens        int64     `json:"total_tokens"`
+	UsagePresent       bool      `json:"usage_present"`
 }
 
 type usageFileDelta struct {
@@ -84,7 +102,8 @@ type usageFileDelta struct {
 }
 
 func NewUsageFileStore(historyRoot string) *UsageFileStore {
-	return &UsageFileStore{path: filepath.Join(strings.TrimSpace(historyRoot), usageFileName)}
+	path := filepath.Join(strings.TrimSpace(historyRoot), usageFileName)
+	return &UsageFileStore{path: path, journalPath: path + usageJournalSuffix}
 }
 
 func (store *UsageFileStore) UpsertEvent(event usageFileEvent) error {
@@ -95,6 +114,14 @@ func (store *UsageFileStore) UpsertEvent(event usageFileEvent) error {
 	if event.EventID == "" {
 		return nil
 	}
+	event.SourceProviderID = strings.TrimSpace(event.SourceProviderID)
+	event.SourceProviderName = strings.TrimSpace(event.SourceProviderName)
+	event.ProviderType = strings.TrimSpace(event.ProviderType)
+	event.ChannelID = strings.TrimSpace(event.ChannelID)
+	event.RequestModel = strings.TrimSpace(event.RequestModel)
+	event.Model = strings.TrimSpace(event.Model)
+	event.PricingModel = strings.TrimSpace(event.PricingModel)
+	event.Error = strings.TrimSpace(event.Error)
 	event.Kind = normalizeUsageEventKind(event.Kind)
 	event.Status = strings.TrimSpace(event.Status)
 	if event.At.IsZero() {
@@ -121,6 +148,13 @@ func (store *UsageFileStore) UpsertEvent(event usageFileEvent) error {
 	if err != nil {
 		return err
 	}
+	journalSequence, err := latestUsageJournalSequence(store.journalPath)
+	if err != nil {
+		return err
+	}
+	if journalSequence > doc.NextSequence {
+		doc.NextSequence = journalSequence
+	}
 	if doc.EventIndex == nil {
 		doc.EventIndex = make(map[string]usageFileEvent)
 	}
@@ -128,12 +162,17 @@ func (store *UsageFileStore) UpsertEvent(event usageFileEvent) error {
 	if found {
 		applyUsageFileDelta(&doc, oldEvent.At, negateUsageFileDelta(usageFileEventDelta(oldEvent)))
 	}
+	doc.NextSequence++
+	event.Sequence = doc.NextSequence
 	applyUsageFileDelta(&doc, event.At, usageFileEventDelta(event))
 	doc.RecentEvents = upsertRecentUsageEvent(doc.RecentEvents, event)
 	doc.RecentEvents = trimRecentUsageEvents(doc.RecentEvents, usageRecentEventLimit)
 	doc.EventIndex = buildUsageEventIndex(doc.RecentEvents)
 	doc.SchemaVersion = usageFileSchemaVersion
 	doc.UpdatedAt = time.Now().UTC()
+	if err := appendUsageJournalEvent(store.journalPath, event); err != nil {
+		return err
+	}
 	return writeJSONFileAtomic(store.path, doc)
 }
 
@@ -205,6 +244,7 @@ func readUsageFileDocument(path string) (usageFileDocument, error) {
 	if doc.SchemaVersion == 0 {
 		doc.SchemaVersion = 1
 	}
+	doc.NextSequence = normalizeUsageSequences(doc.RecentEvents, doc.NextSequence)
 	doc.RecentEvents = trimRecentUsageEvents(doc.RecentEvents, usageRecentEventLimit)
 	if len(doc.EventIndex) == 0 {
 		doc.EventIndex = buildUsageEventIndex(doc.RecentEvents)
@@ -226,6 +266,221 @@ func upsertRecentUsageEvent(items []usageFileEvent, event usageFileEvent) []usag
 		next = append(next, item)
 	}
 	return next
+}
+
+type UsageEvent struct {
+	Sequence           int64     `json:"sequence"`
+	EventID            string    `json:"eventId"`
+	Status             string    `json:"status"`
+	SourceProviderID   string    `json:"sourceProviderId"`
+	SourceProviderName string    `json:"sourceProviderName"`
+	ProviderType       string    `json:"providerType"`
+	ChannelID          string    `json:"channelId"`
+	RequestModel       string    `json:"requestModel"`
+	Model              string    `json:"model"`
+	PricingModel       string    `json:"pricingModel"`
+	StatusCode         int       `json:"statusCode"`
+	Error              string    `json:"error,omitempty"`
+	LatencyMS          int64     `json:"latencyMs"`
+	FirstTokenMS       int64     `json:"firstTokenMs"`
+	DurationMS         int64     `json:"durationMs"`
+	IsStreaming        bool      `json:"isStreaming"`
+	At                 time.Time `json:"at"`
+	InputTokens        int64     `json:"inputTokens"`
+	OutputTokens       int64     `json:"outputTokens"`
+	CacheReadTokens    int64     `json:"cacheReadTokens"`
+	CacheWriteTokens   int64     `json:"cacheWriteTokens"`
+	UsagePresent       bool      `json:"usagePresent"`
+}
+
+type UsageEventPage struct {
+	Events     []UsageEvent `json:"events"`
+	NextCursor int64        `json:"nextCursor"`
+	HasMore    bool         `json:"hasMore"`
+}
+
+func (store *UsageFileStore) EventsAfter(cursor int64, limit int) (UsageEventPage, error) {
+	if limit <= 0 || limit > 1000 {
+		limit = 200
+	}
+	page := UsageEventPage{Events: make([]UsageEvent, 0, limit), NextCursor: cursor}
+	if store == nil || strings.TrimSpace(store.journalPath) == "" {
+		return page, nil
+	}
+	release, err := acquireConversationLock(store.path + ".lock")
+	if err != nil {
+		return page, err
+	}
+	defer release()
+	if err := compactConfirmedUsageJournal(store.journalPath, cursor); err != nil {
+		return page, err
+	}
+	file, err := os.Open(store.journalPath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return page, nil
+		}
+		return page, err
+	}
+	defer file.Close()
+	scanner := bufio.NewScanner(file)
+	scanner.Buffer(make([]byte, 64*1024), 2*1024*1024)
+	for scanner.Scan() {
+		var event usageFileEvent
+		if err := json.Unmarshal(scanner.Bytes(), &event); err != nil {
+			return page, fmt.Errorf("decode usage journal: %w", err)
+		}
+		if event.Sequence <= cursor {
+			continue
+		}
+		if len(page.Events) >= limit {
+			page.HasMore = true
+			break
+		}
+		page.Events = append(page.Events, exportUsageEvent(event))
+		page.NextCursor = event.Sequence
+	}
+	if err := scanner.Err(); err != nil {
+		return page, err
+	}
+	return page, nil
+}
+
+func compactConfirmedUsageJournal(path string, confirmedSequence int64) error {
+	if confirmedSequence <= 0 {
+		return nil
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return fmt.Errorf("open usage journal for compaction: %w", err)
+	}
+	defer file.Close()
+
+	kept := make([][]byte, 0)
+	changed := false
+	scanner := bufio.NewScanner(file)
+	scanner.Buffer(make([]byte, 64*1024), 2*1024*1024)
+	for scanner.Scan() {
+		line := append([]byte(nil), scanner.Bytes()...)
+		var event usageFileEvent
+		if err := json.Unmarshal(line, &event); err != nil {
+			return fmt.Errorf("decode usage journal during compaction: %w", err)
+		}
+		if event.Sequence < confirmedSequence {
+			changed = true
+			continue
+		}
+		kept = append(kept, line)
+	}
+	if err := scanner.Err(); err != nil {
+		return fmt.Errorf("scan usage journal during compaction: %w", err)
+	}
+	if !changed {
+		return nil
+	}
+	if err := file.Close(); err != nil {
+		return fmt.Errorf("close usage journal before compaction: %w", err)
+	}
+
+	tempFile, tempPath, err := openUniqueArtifactTempFile(path)
+	if err != nil {
+		return fmt.Errorf("open usage journal temp file: %w", err)
+	}
+	renamed := false
+	defer func() {
+		_ = tempFile.Close()
+		if !renamed {
+			_ = os.Remove(tempPath)
+		}
+	}()
+	if err := tempFile.Chmod(0o600); err != nil {
+		return fmt.Errorf("set usage journal temp permissions: %w", err)
+	}
+	for _, line := range kept {
+		if _, err := tempFile.Write(append(line, '\n')); err != nil {
+			return fmt.Errorf("write compacted usage journal: %w", err)
+		}
+	}
+	if err := tempFile.Sync(); err != nil {
+		return fmt.Errorf("sync compacted usage journal: %w", err)
+	}
+	if err := tempFile.Close(); err != nil {
+		return fmt.Errorf("close compacted usage journal: %w", err)
+	}
+	if err := renameArtifactTempFile(tempPath, path); err != nil {
+		return fmt.Errorf("replace usage journal after compaction: %w", err)
+	}
+	renamed = true
+	return syncDirectory(filepath.Dir(path))
+}
+
+func latestUsageJournalSequence(path string) (int64, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return 0, nil
+		}
+		return 0, err
+	}
+	defer file.Close()
+	var latest int64
+	scanner := bufio.NewScanner(file)
+	scanner.Buffer(make([]byte, 64*1024), 2*1024*1024)
+	for scanner.Scan() {
+		var event usageFileEvent
+		if err := json.Unmarshal(scanner.Bytes(), &event); err != nil {
+			return 0, fmt.Errorf("decode usage journal: %w", err)
+		}
+		if event.Sequence > latest {
+			latest = event.Sequence
+		}
+	}
+	return latest, scanner.Err()
+}
+
+func appendUsageJournalEvent(path string, event usageFileEvent) error {
+	payload, err := json.Marshal(event)
+	if err != nil {
+		return err
+	}
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		return fmt.Errorf("open usage journal: %w", err)
+	}
+	defer file.Close()
+	if _, err := file.Write(append(payload, '\n')); err != nil {
+		return fmt.Errorf("append usage journal: %w", err)
+	}
+	return file.Sync()
+}
+
+func exportUsageEvent(event usageFileEvent) UsageEvent {
+	return UsageEvent{
+		Sequence: event.Sequence, EventID: event.EventID, Status: event.Status,
+		SourceProviderID: event.SourceProviderID, SourceProviderName: event.SourceProviderName,
+		ProviderType: event.ProviderType, ChannelID: event.ChannelID,
+		RequestModel: event.RequestModel, Model: event.Model, PricingModel: event.PricingModel,
+		StatusCode: event.StatusCode, Error: event.Error, LatencyMS: event.LatencyMS,
+		FirstTokenMS: event.FirstTokenMS, DurationMS: event.DurationMS,
+		IsStreaming: event.IsStreaming, At: event.At, InputTokens: event.InputTokens,
+		OutputTokens: event.OutputTokens, CacheReadTokens: event.CacheReadTokens,
+		CacheWriteTokens: event.CacheWriteTokens, UsagePresent: event.UsagePresent,
+	}
+}
+
+func normalizeUsageSequences(items []usageFileEvent, nextSequence int64) int64 {
+	for index := len(items) - 1; index >= 0; index-- {
+		if items[index].Sequence <= 0 {
+			nextSequence++
+			items[index].Sequence = nextSequence
+		} else if items[index].Sequence > nextSequence {
+			nextSequence = items[index].Sequence
+		}
+	}
+	return nextSequence
 }
 
 func trimRecentUsageEvents(items []usageFileEvent, limit int) []usageFileEvent {

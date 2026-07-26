@@ -52,7 +52,10 @@ func (router *Router) Stream(ctx context.Context, req StreamRequest, sink func(M
 	resolved.BaseURL = strings.TrimSpace(channel.BaseURL)
 	resolved.APIKey = strings.TrimSpace(channel.APIKey)
 	resolved.ProviderModelID = strings.TrimSpace(channel.Model)
+	resolved.PricingModel = strings.TrimSpace(channel.PricingModel)
 	resolved.ResolvedChannelID = strings.TrimSpace(channel.ID)
+	resolved.SourceProviderID = strings.TrimSpace(channel.SourceProviderID)
+	resolved.SourceProviderName = strings.TrimSpace(channel.SourceProviderName)
 	resolved.ResolvedChannelName = strings.TrimSpace(channel.Name)
 	resolved.ResolvedContextWindowTokens = channel.ContextWindowTokens
 	resolved.ReasoningEffort = openAIReasoningEffortFromRuntime(channel.ReasoningEffort)
@@ -124,14 +127,43 @@ func (router *Router) Stream(ctx context.Context, req StreamRequest, sink func(M
 		}
 	}
 
+	decorateEvent := func(event ModelEvent) error {
+		event.SourceProviderID = resolved.SourceProviderID
+		event.SourceProviderName = resolved.SourceProviderName
+		event.ChannelID = resolved.ResolvedChannelID
+		event.RequestModel = strings.TrimSpace(req.ModelID)
+		if strings.TrimSpace(event.Provider) == "" {
+			event.Provider = resolved.Provider
+		}
+		if strings.TrimSpace(event.Model) == "" {
+			event.Model = resolved.ProviderModelID
+		}
+		event.PricingModel = strings.TrimSpace(resolved.PricingModel)
+		if event.PricingModel == "" {
+			event.PricingModel = event.Model
+		}
+		return sink(event)
+	}
+
+	var streamErr error
 	switch resolved.Provider {
 	case "anthropic":
-		return router.anthropic.Stream(ctx, resolved, sink)
+		streamErr = router.anthropic.Stream(ctx, resolved, decorateEvent)
 	case "openai":
-		return router.openai.Stream(ctx, resolved, sink)
+		streamErr = router.openai.Stream(ctx, resolved, decorateEvent)
 	default:
 		return fmt.Errorf("unsupported provider %q", resolved.Provider)
 	}
+	if streamErr != nil {
+		_ = decorateEvent(ModelEvent{
+			Kind:       ModelEventKindProviderError,
+			OccurredAt: time.Now().UTC(),
+			Provider:   resolved.Provider,
+			Model:      resolved.ProviderModelID,
+			Err:        streamErr,
+		})
+	}
+	return streamErr
 }
 
 // sanitizeProviderMessages removes replay-only placeholders and trims trailing

@@ -96,3 +96,35 @@ func EnsureCACertInstalled(certPEM []byte, certPath string) error {
 	logger.Infof("ensureCACertInstalled: cert not installed in macOS login keychain, installing...")
 	return installCACertToDarwinKeychain(certPEM, certPath)
 }
+
+// RemoveCACertInstalled 从当前用户登录钥匙串移除本安装生成的 CA。
+func RemoveCACertInstalled(certPEM []byte, _ string) error {
+	installed, err := isCACertInstalled(certPEM)
+	if err != nil {
+		return err
+	}
+	if !installed {
+		return nil
+	}
+	fingerprint, err := getCertSHA1Fingerprint(certPEM)
+	if err != nil {
+		return err
+	}
+	out, err := exec.Command(
+		darwinSecurityExe,
+		"delete-certificate",
+		"-Z", fingerprint,
+		darwinLoginKeychainName,
+	).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("从 macOS 登录钥匙串移除 CA 失败: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+	installed, err = isCACertInstalled(certPEM)
+	if err != nil {
+		return err
+	}
+	if installed {
+		return fmt.Errorf("macOS CA 移除命令已执行，但证书仍存在")
+	}
+	return nil
+}

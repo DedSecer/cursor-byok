@@ -84,8 +84,14 @@ type StreamRequest struct {
 	APIKey string
 	// ProviderModelID 表示 provider 侧真实模型标识。
 	ProviderModelID string
+	// PricingModel 表示成本统计使用的模型；留空时使用 ProviderModelID。
+	PricingModel string
 	// ResolvedChannelID 表示本次请求实际命中的 adapter 渠道 ID。
 	ResolvedChannelID string
+	// SourceProviderID 表示配置系统中的稳定 Provider 主键。
+	SourceProviderID string
+	// SourceProviderName 表示请求发生时的 Provider 名称快照。
+	SourceProviderName string
 	// ResolvedChannelName 表示本次请求实际命中的 adapter 展示名。
 	ResolvedChannelName string
 	// ResolvedContextWindowTokens 表示本次请求实际命中的 adapter 上下文窗口。
@@ -176,6 +182,16 @@ const (
 type ModelEvent struct {
 	// Kind 表示事件类型。
 	Kind ModelEventKind
+	// SourceProviderID 是配置系统中的稳定 Provider 主键。
+	SourceProviderID string
+	// SourceProviderName 是请求发生时的 Provider 名称快照。
+	SourceProviderName string
+	// ChannelID 是 sidecar 的运行时渠道标识。
+	ChannelID string
+	// RequestModel 是 Cursor 客户端选择的模型引用。
+	RequestModel string
+	// PricingModel 是本次请求采用的计价模型。
+	PricingModel string
 	// OccurredAt 表示当前 provider 事件发生时间。
 	OccurredAt time.Time
 	// Provider 表示当前事件所属 provider。

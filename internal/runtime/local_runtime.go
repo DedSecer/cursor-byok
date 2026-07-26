@@ -36,6 +36,10 @@ const (
 // ModelAdapterConfig 定义了当前模块中的 ModelAdapterConfig 类型。
 type ModelAdapterConfig struct {
 	ID string `json:"id,omitempty"`
+	// SourceProviderID 是 CC Switch 中稳定的 Provider 主键。
+	SourceProviderID string `json:"sourceProviderId,omitempty"`
+	// SourceProviderName 保存请求发生时使用的 Provider 展示名。
+	SourceProviderName string `json:"sourceProviderName,omitempty"`
 	// DisplayName 表示当前声明中的 DisplayName。
 	DisplayName string `json:"displayName"`
 	// Type 表示当前声明中的 Type。
@@ -48,6 +52,8 @@ type ModelAdapterConfig struct {
 	TooltipData string `json:"tooltipData"`
 	// ModelID 表示当前声明中的 ModelID。
 	ModelID string `json:"modelID"`
+	// PricingModel 是成本统计使用的模型；留空时回退到 ModelID。
+	PricingModel string `json:"pricingModel,omitempty"`
 	// ReasoningEffort 表示当前声明中的 ReasoningEffort。
 	ReasoningEffort string `json:"reasoningEffort"`
 	// OpenAIEndpoint 表示 OpenAI 兼容适配器使用的 API 端点。
@@ -103,12 +109,15 @@ func NormalizeModelAdapterConfigs(input []ModelAdapterConfig) ([]ModelAdapterCon
 			return nil, err
 		}
 		next := ModelAdapterConfig{
+			SourceProviderID:     strings.TrimSpace(item.SourceProviderID),
+			SourceProviderName:   strings.TrimSpace(item.SourceProviderName),
 			DisplayName:          strings.TrimSpace(item.DisplayName),
 			Type:                 normalizeModelAdapterType(item.Type),
 			BaseURL:              baseURL,
 			APIKey:               strings.TrimSpace(item.APIKey),
 			TooltipData:          strings.TrimSpace(item.TooltipData),
 			ModelID:              strings.TrimSpace(item.ModelID),
+			PricingModel:         strings.TrimSpace(item.PricingModel),
 			ReasoningEffort:      normalizeReasoningEffort(item.ReasoningEffort),
 			OpenAIEndpoint:       modelchannel.NormalizeOpenAIEndpoint(item.Type, item.OpenAIEndpoint),
 			ContextWindowTokens:  normalizeMaxCompletionTokens(item.ContextWindowTokens),
@@ -157,6 +166,12 @@ func NormalizeModelAdapterConfigs(input []ModelAdapterConfig) ([]ModelAdapterCon
 			return nil, errors.New("模型适配器 anthropicThinkingEffort 仅支持 low、medium、high、xhigh、max")
 		}
 		next.ID = modelchannel.BuildChannelID(next.BaseURL, next.ModelID, next.APIKey, next.DisplayName, next.OpenAIEndpoint)
+		if next.SourceProviderID == "" {
+			next.SourceProviderID = next.ID
+		}
+		if next.SourceProviderName == "" {
+			next.SourceProviderName = next.DisplayName
+		}
 		if _, exists := seenChannelIDs[next.ID]; exists {
 			return nil, errors.New("模型适配器渠道不能重复，请检查 url、modelID、apiKey、displayName、endpoint 组合")
 		}
@@ -243,6 +258,10 @@ func normalizeModelAdapterType(value string) string {
 type ResolvedChannel struct {
 	// ID 表示当前声明中的 ID。
 	ID string
+	// SourceProviderID 是配置系统中的稳定 Provider 主键。
+	SourceProviderID string
+	// SourceProviderName 是请求发生时的 Provider 名称快照。
+	SourceProviderName string
 	// Name 表示当前声明中的 Name。
 	Name string
 	// GroupName 表示当前声明中的 GroupName。
@@ -257,6 +276,8 @@ type ResolvedChannel struct {
 	APIKey string
 	// Model 表示当前声明中的 Model。
 	Model string
+	// PricingModel 是成本统计使用的模型；留空时回退到 Model。
+	PricingModel string
 	// TimeoutMS 表示当前声明中的 TimeoutMS。
 	TimeoutMS int
 	// ContextWindowTokens 表示当前声明中的 ContextWindowTokens。
@@ -387,6 +408,8 @@ func (s *FixedChannelService) SelectChannelForModel(ctx context.Context, modelID
 		adapter := adapters[matchIndex]
 		resolved := ResolvedChannel{
 			ID:                          strings.TrimSpace(adapter.ID),
+			SourceProviderID:            strings.TrimSpace(adapter.SourceProviderID),
+			SourceProviderName:          strings.TrimSpace(adapter.SourceProviderName),
 			Name:                        strings.TrimSpace(adapter.DisplayName),
 			GroupName:                   "local",
 			Code:                        strings.TrimSpace(adapter.ID),
@@ -394,6 +417,7 @@ func (s *FixedChannelService) SelectChannelForModel(ctx context.Context, modelID
 			BaseURL:                     strings.TrimSpace(adapter.BaseURL),
 			APIKey:                      strings.TrimSpace(adapter.APIKey),
 			Model:                       strings.TrimSpace(adapter.ModelID),
+			PricingModel:                strings.TrimSpace(adapter.PricingModel),
 			TimeoutMS:                   configurableChannelTimeoutMS,
 			ContextWindowTokens:         configurableChannelContextWindowTokens,
 			MaxTokens:                   configurableChannelMaxTokens,
