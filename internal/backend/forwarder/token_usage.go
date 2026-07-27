@@ -25,6 +25,7 @@ type turnUsageSnapshot struct {
 	CacheReadTokens    int64
 	CacheWriteTokens   int64
 	UsagePresent       bool
+	UsageStatus        string
 	CacheReadPresent   bool
 	CacheWritePresent  bool
 }
@@ -385,6 +386,8 @@ func (service *Service) recordTurnUsageSnapshot(stream *ActiveStream, conversati
 			CacheReadTokens:    usage.CacheReadTokens,
 			CacheWriteTokens:   usage.CacheWriteTokens,
 			UsagePresent:       usage.UsagePresent,
+			UsageStatus:        usage.UsageStatus,
+			CacheUsageObserved: usage.UsageStatus == modeladapter.UsageStatusReported && usage.cacheUsageComplete(),
 		}); err != nil {
 			return err
 		}
@@ -437,6 +440,7 @@ func (service *Service) recordTurnFinalizedSnapshot(stream *ActiveStream, conver
 		CacheReadTokens:  usage.CacheReadTokens,
 		CacheWriteTokens: usage.CacheWriteTokens,
 		UsagePresent:     usage.UsagePresent,
+		UsageStatus:      usage.UsageStatus,
 	})
 }
 

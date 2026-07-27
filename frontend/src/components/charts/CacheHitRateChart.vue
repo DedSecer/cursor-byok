@@ -12,11 +12,14 @@ ChartJS.register(ArcElement, Tooltip);
 const props = defineProps({
   rate: {
     type: Number,
-    default: 0,
+    default: null,
   },
 });
 
 const percentage = computed(() => {
+  if (props.rate == null) {
+    return 0;
+  }
   const rate = Number(props.rate);
   if (!Number.isFinite(rate)) {
     return 0;
@@ -25,6 +28,9 @@ const percentage = computed(() => {
 });
 
 const label = computed(() => {
+  if (props.rate == null) {
+    return "N/A";
+  }
   const rate = Number(props.rate);
   if (!Number.isFinite(rate)) {
     return "--";

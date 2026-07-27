@@ -14,7 +14,7 @@ import (
 const (
 	usageFileName          = "usage.json"
 	usageJournalSuffix     = ".events.jsonl"
-	usageFileSchemaVersion = 3
+	usageFileSchemaVersion = 5
 	usageRecentEventLimit  = 500
 
 	usageEventKindProvider = "provider_call"
@@ -38,28 +38,36 @@ type usageFileDocument struct {
 }
 
 type usageFileTotals struct {
-	ProviderCalls     int64 `json:"provider_calls"`
-	TurnsTotal        int64 `json:"turns_total"`
-	ValidTurnsTotal   int64 `json:"valid_turns_total"`
-	InvalidTurnsTotal int64 `json:"invalid_turns_total"`
-	InputTokens       int64 `json:"input_tokens"`
-	OutputTokens      int64 `json:"output_tokens"`
-	CacheReadTokens   int64 `json:"cache_read_tokens"`
-	CacheWriteTokens  int64 `json:"cache_write_tokens"`
-	TotalTokens       int64 `json:"total_tokens"`
+	ProviderCalls            int64 `json:"provider_calls"`
+	TurnsTotal               int64 `json:"turns_total"`
+	ValidTurnsTotal          int64 `json:"valid_turns_total"`
+	InvalidTurnsTotal        int64 `json:"invalid_turns_total"`
+	InputTokens              int64 `json:"input_tokens"`
+	OutputTokens             int64 `json:"output_tokens"`
+	CacheReadTokens          int64 `json:"cache_read_tokens"`
+	CacheWriteTokens         int64 `json:"cache_write_tokens"`
+	TotalTokens              int64 `json:"total_tokens"`
+	CacheObservedCalls       int64 `json:"cache_observed_calls"`
+	CacheObservedInputTokens int64 `json:"cache_observed_input_tokens"`
+	CacheObservedReadTokens  int64 `json:"cache_observed_read_tokens"`
+	CacheObservedWriteTokens int64 `json:"cache_observed_write_tokens"`
 }
 
 type usageFileDaily struct {
-	Date              string `json:"date"`
-	ProviderCalls     int64  `json:"provider_calls"`
-	TurnsTotal        int64  `json:"turns_total"`
-	ValidTurnsTotal   int64  `json:"valid_turns_total"`
-	InvalidTurnsTotal int64  `json:"invalid_turns_total"`
-	InputTokens       int64  `json:"input_tokens"`
-	OutputTokens      int64  `json:"output_tokens"`
-	CacheReadTokens   int64  `json:"cache_read_tokens"`
-	CacheWriteTokens  int64  `json:"cache_write_tokens"`
-	TotalTokens       int64  `json:"total_tokens"`
+	Date                     string `json:"date"`
+	ProviderCalls            int64  `json:"provider_calls"`
+	TurnsTotal               int64  `json:"turns_total"`
+	ValidTurnsTotal          int64  `json:"valid_turns_total"`
+	InvalidTurnsTotal        int64  `json:"invalid_turns_total"`
+	InputTokens              int64  `json:"input_tokens"`
+	OutputTokens             int64  `json:"output_tokens"`
+	CacheReadTokens          int64  `json:"cache_read_tokens"`
+	CacheWriteTokens         int64  `json:"cache_write_tokens"`
+	TotalTokens              int64  `json:"total_tokens"`
+	CacheObservedCalls       int64  `json:"cache_observed_calls"`
+	CacheObservedInputTokens int64  `json:"cache_observed_input_tokens"`
+	CacheObservedReadTokens  int64  `json:"cache_observed_read_tokens"`
+	CacheObservedWriteTokens int64  `json:"cache_observed_write_tokens"`
 }
 
 type usageFileEvent struct {
@@ -87,18 +95,24 @@ type usageFileEvent struct {
 	CacheWriteTokens   int64     `json:"cache_write_tokens"`
 	TotalTokens        int64     `json:"total_tokens"`
 	UsagePresent       bool      `json:"usage_present"`
+	UsageStatus        string    `json:"usage_status,omitempty"`
+	CacheUsageObserved bool      `json:"cache_usage_observed"`
 }
 
 type usageFileDelta struct {
-	providerCalls     int64
-	turnsTotal        int64
-	validTurnsTotal   int64
-	invalidTurnsTotal int64
-	inputTokens       int64
-	outputTokens      int64
-	cacheReadTokens   int64
-	cacheWriteTokens  int64
-	totalTokens       int64
+	providerCalls            int64
+	turnsTotal               int64
+	validTurnsTotal          int64
+	invalidTurnsTotal        int64
+	inputTokens              int64
+	outputTokens             int64
+	cacheReadTokens          int64
+	cacheWriteTokens         int64
+	totalTokens              int64
+	cacheObservedCalls       int64
+	cacheObservedInputTokens int64
+	cacheObservedReadTokens  int64
+	cacheObservedWriteTokens int64
 }
 
 func NewUsageFileStore(historyRoot string) *UsageFileStore {
@@ -124,6 +138,7 @@ func (store *UsageFileStore) UpsertEvent(event usageFileEvent) error {
 	event.Error = strings.TrimSpace(event.Error)
 	event.Kind = normalizeUsageEventKind(event.Kind)
 	event.Status = strings.TrimSpace(event.Status)
+	event.UsageStatus = normalizeUsageStatus(event.UsageStatus, event.UsagePresent)
 	if event.At.IsZero() {
 		event.At = time.Now().UTC()
 	} else {
@@ -205,8 +220,14 @@ func (store *UsageFileStore) LookupEvent(needle string) (usageFileEvent, bool, e
 			continue
 		}
 		if !found {
-			aggregate = usageFileEvent{EventID: trimmed, At: event.At}
+			aggregate = usageFileEvent{
+				EventID:            trimmed,
+				At:                 event.At,
+				CacheUsageObserved: event.CacheUsageObserved,
+			}
 			found = true
+		} else {
+			aggregate.CacheUsageObserved = aggregate.CacheUsageObserved && event.CacheUsageObserved
 		}
 		if event.At.After(aggregate.At) {
 			aggregate.At = event.At
@@ -217,6 +238,7 @@ func (store *UsageFileStore) LookupEvent(needle string) (usageFileEvent, bool, e
 		aggregate.CacheWriteTokens += nonNegativeInt64(event.CacheWriteTokens)
 		aggregate.TotalTokens += nonNegativeInt64(event.TotalTokens)
 		aggregate.UsagePresent = aggregate.UsagePresent || event.UsagePresent
+		aggregate.UsageStatus = mergeUsageStatus(aggregate.UsageStatus, event.UsageStatus, event.UsagePresent)
 	}
 	if found {
 		return aggregate, true, nil
@@ -291,6 +313,8 @@ type UsageEvent struct {
 	CacheReadTokens    int64     `json:"cacheReadTokens"`
 	CacheWriteTokens   int64     `json:"cacheWriteTokens"`
 	UsagePresent       bool      `json:"usagePresent"`
+	UsageStatus        string    `json:"usageStatus"`
+	CacheUsageObserved bool      `json:"cacheUsageObserved"`
 }
 
 type UsageEventPage struct {
@@ -468,6 +492,8 @@ func exportUsageEvent(event usageFileEvent) UsageEvent {
 		IsStreaming: event.IsStreaming, At: event.At, InputTokens: event.InputTokens,
 		OutputTokens: event.OutputTokens, CacheReadTokens: event.CacheReadTokens,
 		CacheWriteTokens: event.CacheWriteTokens, UsagePresent: event.UsagePresent,
+		UsageStatus:        normalizeUsageStatus(event.UsageStatus, event.UsagePresent),
+		CacheUsageObserved: event.CacheUsageObserved,
 	}
 }
 
@@ -512,6 +538,33 @@ func normalizeUsageEventKind(kind string) string {
 	}
 }
 
+func normalizeUsageStatus(status string, usagePresent bool) string {
+	switch strings.TrimSpace(status) {
+	case "reported", "estimated", "missing":
+		return strings.TrimSpace(status)
+	default:
+		if usagePresent {
+			return "reported"
+		}
+		return "missing"
+	}
+}
+
+func mergeUsageStatus(current string, next string, usagePresent bool) string {
+	next = normalizeUsageStatus(next, usagePresent)
+	if strings.TrimSpace(current) == "" {
+		return next
+	}
+	current = normalizeUsageStatus(current, false)
+	if current == "missing" || next == "missing" {
+		return "missing"
+	}
+	if current == "estimated" || next == "estimated" {
+		return "estimated"
+	}
+	return "reported"
+}
+
 func usageFileEventDelta(event usageFileEvent) usageFileDelta {
 	switch normalizeUsageEventKind(event.Kind) {
 	case usageEventKindTurn:
@@ -523,7 +576,7 @@ func usageFileEventDelta(event usageFileEvent) usageFileDelta {
 		}
 		return delta
 	default:
-		return usageFileDelta{
+		delta := usageFileDelta{
 			providerCalls:    1,
 			inputTokens:      nonNegativeInt64(event.InputTokens),
 			outputTokens:     nonNegativeInt64(event.OutputTokens),
@@ -531,20 +584,31 @@ func usageFileEventDelta(event usageFileEvent) usageFileDelta {
 			cacheWriteTokens: nonNegativeInt64(event.CacheWriteTokens),
 			totalTokens:      nonNegativeInt64(event.TotalTokens),
 		}
+		if event.CacheUsageObserved {
+			delta.cacheObservedCalls = 1
+			delta.cacheObservedInputTokens = nonNegativeInt64(event.InputTokens)
+			delta.cacheObservedReadTokens = nonNegativeInt64(event.CacheReadTokens)
+			delta.cacheObservedWriteTokens = nonNegativeInt64(event.CacheWriteTokens)
+		}
+		return delta
 	}
 }
 
 func negateUsageFileDelta(value usageFileDelta) usageFileDelta {
 	return usageFileDelta{
-		providerCalls:     -value.providerCalls,
-		turnsTotal:        -value.turnsTotal,
-		validTurnsTotal:   -value.validTurnsTotal,
-		invalidTurnsTotal: -value.invalidTurnsTotal,
-		inputTokens:       -value.inputTokens,
-		outputTokens:      -value.outputTokens,
-		cacheReadTokens:   -value.cacheReadTokens,
-		cacheWriteTokens:  -value.cacheWriteTokens,
-		totalTokens:       -value.totalTokens,
+		providerCalls:            -value.providerCalls,
+		turnsTotal:               -value.turnsTotal,
+		validTurnsTotal:          -value.validTurnsTotal,
+		invalidTurnsTotal:        -value.invalidTurnsTotal,
+		inputTokens:              -value.inputTokens,
+		outputTokens:             -value.outputTokens,
+		cacheReadTokens:          -value.cacheReadTokens,
+		cacheWriteTokens:         -value.cacheWriteTokens,
+		totalTokens:              -value.totalTokens,
+		cacheObservedCalls:       -value.cacheObservedCalls,
+		cacheObservedInputTokens: -value.cacheObservedInputTokens,
+		cacheObservedReadTokens:  -value.cacheObservedReadTokens,
+		cacheObservedWriteTokens: -value.cacheObservedWriteTokens,
 	}
 }
 
@@ -561,6 +625,10 @@ func applyUsageFileDelta(doc *usageFileDocument, at time.Time, delta usageFileDe
 	doc.Totals.CacheReadTokens = clampNonNegativeInt64(doc.Totals.CacheReadTokens + delta.cacheReadTokens)
 	doc.Totals.CacheWriteTokens = clampNonNegativeInt64(doc.Totals.CacheWriteTokens + delta.cacheWriteTokens)
 	doc.Totals.TotalTokens = clampNonNegativeInt64(doc.Totals.TotalTokens + delta.totalTokens)
+	doc.Totals.CacheObservedCalls = clampNonNegativeInt64(doc.Totals.CacheObservedCalls + delta.cacheObservedCalls)
+	doc.Totals.CacheObservedInputTokens = clampNonNegativeInt64(doc.Totals.CacheObservedInputTokens + delta.cacheObservedInputTokens)
+	doc.Totals.CacheObservedReadTokens = clampNonNegativeInt64(doc.Totals.CacheObservedReadTokens + delta.cacheObservedReadTokens)
+	doc.Totals.CacheObservedWriteTokens = clampNonNegativeInt64(doc.Totals.CacheObservedWriteTokens + delta.cacheObservedWriteTokens)
 
 	date := at.UTC().Format("2006-01-02")
 	for index := range doc.Daily {
@@ -588,6 +656,10 @@ func applyUsageDailyDelta(item *usageFileDaily, delta usageFileDelta) {
 	item.CacheReadTokens = clampNonNegativeInt64(item.CacheReadTokens + delta.cacheReadTokens)
 	item.CacheWriteTokens = clampNonNegativeInt64(item.CacheWriteTokens + delta.cacheWriteTokens)
 	item.TotalTokens = clampNonNegativeInt64(item.TotalTokens + delta.totalTokens)
+	item.CacheObservedCalls = clampNonNegativeInt64(item.CacheObservedCalls + delta.cacheObservedCalls)
+	item.CacheObservedInputTokens = clampNonNegativeInt64(item.CacheObservedInputTokens + delta.cacheObservedInputTokens)
+	item.CacheObservedReadTokens = clampNonNegativeInt64(item.CacheObservedReadTokens + delta.cacheObservedReadTokens)
+	item.CacheObservedWriteTokens = clampNonNegativeInt64(item.CacheObservedWriteTokens + delta.cacheObservedWriteTokens)
 }
 
 func clampNonNegativeInt64(value int64) int64 {

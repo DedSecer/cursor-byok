@@ -55,6 +55,108 @@ func TestUsageJournalCompactsOnlyConfirmedEvents(t *testing.T) {
 	}
 }
 
+func TestUsageJournalPreservesUsageStatus(t *testing.T) {
+	store := NewUsageFileStore(t.TempDir())
+	if err := store.UpsertEvent(usageFileEvent{
+		EventID:          "estimated-event",
+		Status:           usageTurnStatusDone,
+		Model:            "model",
+		At:               time.Unix(1, 0),
+		InputTokens:      12,
+		OutputTokens:     3,
+		UsageStatus:      "estimated",
+		SourceProviderID: "provider",
+	}); err != nil {
+		t.Fatalf("upsert estimated event: %v", err)
+	}
+
+	page, err := store.EventsAfter(0, 10)
+	if err != nil {
+		t.Fatalf("read usage events: %v", err)
+	}
+	if len(page.Events) != 1 {
+		t.Fatalf("expected one event, got %d", len(page.Events))
+	}
+	if page.Events[0].UsageStatus != "estimated" || page.Events[0].UsagePresent {
+		t.Fatalf("unexpected exported usage status: %+v", page.Events[0])
+	}
+}
+
+func TestUsageStatusAggregationPreservesLeastCertainSource(t *testing.T) {
+	store := NewUsageFileStore(t.TempDir())
+	for _, event := range []usageFileEvent{
+		{
+			EventID:          "request::reported",
+			Status:           usageTurnStatusDone,
+			At:               time.Unix(1, 0),
+			InputTokens:      10,
+			UsagePresent:     true,
+			UsageStatus:      "reported",
+			SourceProviderID: "provider",
+		},
+		{
+			EventID:          "request::estimated",
+			Status:           usageTurnStatusDone,
+			At:               time.Unix(2, 0),
+			OutputTokens:     4,
+			UsageStatus:      "estimated",
+			SourceProviderID: "provider",
+		},
+	} {
+		if err := store.UpsertEvent(event); err != nil {
+			t.Fatalf("upsert %s: %v", event.EventID, err)
+		}
+	}
+
+	aggregate, found, err := store.LookupEvent("request")
+	if err != nil {
+		t.Fatalf("lookup aggregate: %v", err)
+	}
+	if !found || aggregate.UsageStatus != "estimated" {
+		t.Fatalf("mixed reported and estimated usage must aggregate as estimated: %+v", aggregate)
+	}
+}
+
+func TestUsageStoreAggregatesOnlyObservableCacheUsage(t *testing.T) {
+	store := NewUsageFileStore(t.TempDir())
+	for _, event := range []usageFileEvent{
+		{
+			EventID:            "reported",
+			At:                 time.Unix(1, 0),
+			InputTokens:        40,
+			CacheReadTokens:    60,
+			UsagePresent:       true,
+			UsageStatus:        "reported",
+			CacheUsageObserved: true,
+		},
+		{
+			EventID:         "estimated",
+			At:              time.Unix(2, 0),
+			InputTokens:     100,
+			UsageStatus:     "estimated",
+			UsagePresent:    false,
+			CacheReadTokens: 0,
+		},
+	} {
+		if err := store.UpsertEvent(event); err != nil {
+			t.Fatalf("upsert %s: %v", event.EventID, err)
+		}
+	}
+
+	doc, err := readUsageFileDocument(store.path)
+	if err != nil {
+		t.Fatalf("read usage document: %v", err)
+	}
+	if doc.Totals.ProviderCalls != 2 || doc.Totals.InputTokens != 140 {
+		t.Fatalf("unexpected full totals: %+v", doc.Totals)
+	}
+	if doc.Totals.CacheObservedCalls != 1 ||
+		doc.Totals.CacheObservedInputTokens != 40 ||
+		doc.Totals.CacheObservedReadTokens != 60 {
+		t.Fatalf("estimated usage must not enter observable cache totals: %+v", doc.Totals)
+	}
+}
+
 func readJournalSequences(t *testing.T, path string) []int64 {
 	t.Helper()
 	file, err := os.Open(path)

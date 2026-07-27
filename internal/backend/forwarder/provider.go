@@ -36,6 +36,10 @@ func (gateway *DefaultProviderGateway) StartStream(ctx context.Context, req Prov
 	if strings.TrimSpace(req.ThinkingEffort) != "" {
 		requestKnobs["runtime_thinking_effort"] = strings.TrimSpace(req.ThinkingEffort)
 	}
+	estimator := newUsageEstimateAccumulator(req)
+	decoratedSink := func(event modeladapter.ModelEvent) error {
+		return sink(estimator.decorate(event))
+	}
 	err := gateway.router.Stream(ctx, modeladapter.StreamRequest{
 		RequestID:           req.RequestID,
 		RunID:               req.RunID,
@@ -54,7 +58,7 @@ func (gateway *DefaultProviderGateway) StartStream(ctx context.Context, req Prov
 		Observer:            req.Observer,
 		ArtifactPaths:       req.ArtifactPaths,
 		RequestBodyOverride: req.RequestBodyOverride,
-	}, sink)
+	}, decoratedSink)
 	if err != nil {
 		return providerTerminalError{cause: err}
 	}

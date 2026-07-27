@@ -89,6 +89,16 @@ function formatUSD(value) {
 
 const cacheReadTokensTotal = computed(() => normalizeNumber(props.metrics?.cacheReadTokens));
 const cacheWriteTokensTotal = computed(() => normalizeNumber(props.metrics?.cacheWriteTokens));
+const cacheObservedInputTokens = computed(() =>
+  normalizeNumber(props.metrics?.cacheObservedInputTokens),
+);
+const cacheObservedReadTokens = computed(() =>
+  normalizeNumber(props.metrics?.cacheObservedReadTokens),
+);
+const cacheObservedWriteTokens = computed(() =>
+  normalizeNumber(props.metrics?.cacheObservedWriteTokens),
+);
+const cacheObservationPartial = computed(() => Boolean(props.metrics?.cacheObservationPartial));
 
 const inputTokensTotal = computed(() => {
   const promptTokensTotal = normalizeNumber(props.metrics?.promptTokensTotal);
@@ -96,13 +106,18 @@ const inputTokensTotal = computed(() => {
 });
 
 const defaultCacheHitRate = computed(() =>
-  calculateRate(cacheReadTokensTotal.value, cacheReadTokensTotal.value + inputTokensTotal.value),
+  calculateRate(
+    cacheObservedReadTokens.value,
+    cacheObservedReadTokens.value + cacheObservedInputTokens.value,
+  ),
 );
 
 const cacheReuseRate = computed(() =>
   calculateRate(
-    cacheReadTokensTotal.value,
-    cacheReadTokensTotal.value + cacheWriteTokensTotal.value + inputTokensTotal.value,
+    cacheObservedReadTokens.value,
+    cacheObservedReadTokens.value +
+      cacheObservedWriteTokens.value +
+      cacheObservedInputTokens.value,
   ),
 );
 
@@ -148,8 +163,14 @@ const cacheTooltipContent = computed(() => {
   const formula = includeCacheWriteInHitRate.value
     ? "缓存读取 /（缓存读取 + 缓存创建 + 非缓存输入）"
     : "缓存读取 /（缓存读取 + 非缓存输入）";
+  const coverage = cacheObservationPartial.value
+    ? "覆盖：仅基于供应商明确返回缓存字段的部分请求"
+    : selectedCacheHitRate.value == null
+      ? "覆盖：没有缓存可观测请求"
+      : "覆盖：所有请求均可观测缓存字段";
   return [
     `当前：${formatRateLabel(selectedCacheHitRate.value)}`,
+    coverage,
     `公式：${formula}`,
     `默认 ${formatRateLabel(defaultCacheHitRate.value)} / 计入创建 ${formatRateLabel(cacheReuseRate.value)}`,
   ].join("\n");
@@ -318,6 +339,18 @@ const hasHomeAd = computed(() => normalizedHomeAds.value.length > 0);
             </Tooltip>
           </div>
           <CacheHitRateChart :rate="selectedCacheHitRate" />
+          <div
+            v-if="cacheObservationPartial"
+            class="mt-[-7px] text-center text-[10px] text-[#d6a85f]"
+          >
+            仅基于部分请求
+          </div>
+          <div
+            v-else-if="selectedCacheHitRate == null"
+            class="mt-[-7px] text-center text-[10px] text-[#7f7f7f]"
+          >
+            暂无可观测数据
+          </div>
         </div>
 
         <div

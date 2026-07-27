@@ -15,6 +15,13 @@ const (
 	ReasoningSignatureSourceAnthropic = "anthropic"
 	// ReasoningSignatureSourceOpenAIResponses 表示 signature 来自 OpenAI Responses encrypted reasoning content。
 	ReasoningSignatureSourceOpenAIResponses = "openai_responses"
+
+	// UsageStatusReported 表示 token usage 由 provider 明确返回。
+	UsageStatusReported = "reported"
+	// UsageStatusEstimated 表示 provider 未返回 usage，token 由本地估算。
+	UsageStatusEstimated = "estimated"
+	// UsageStatusMissing 表示 provider 未返回 usage，且没有足够信息进行估算。
+	UsageStatusMissing = "missing"
 )
 
 // Message 表示模型适配层统一使用的消息结构。
@@ -234,6 +241,8 @@ type ModelEvent struct {
 	CacheWriteTokens int64
 	// UsagePresent 表示 provider 本次流里实际返回过 usage 对象。
 	UsagePresent bool
+	// UsageStatus 描述 token 来源：reported、estimated 或 missing。
+	UsageStatus string
 	// CacheReadPresent 表示 provider 明确返回了 cache read token 字段。
 	CacheReadPresent bool
 	// CacheWritePresent 表示 provider 明确返回了 cache write token 字段。

@@ -613,6 +613,7 @@ func (service *Service) applyProviderModelEvent(stream *ActiveStream, event mode
 			CacheReadTokens:    event.CacheReadTokens,
 			CacheWriteTokens:   event.CacheWriteTokens,
 			UsagePresent:       event.UsagePresent,
+			UsageStatus:        event.UsageStatus,
 			CacheReadPresent:   event.CacheReadPresent,
 			CacheWritePresent:  event.CacheWritePresent,
 		}
