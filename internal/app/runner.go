@@ -2,12 +2,9 @@ package app
 
 import (
 	"context"
-	"crypto/sha256"
-	"crypto/x509"
-	"encoding/hex"
-	"encoding/pem"
 	"io/fs"
 	"net"
+	"path/filepath"
 	goruntime "runtime"
 	"strings"
 	"time"
@@ -66,10 +63,12 @@ func Run(resources EmbeddedResources) error {
 	logger.Init()
 	netproxy.InstallDefaultTransport()
 
-	embeddedCACertPEM := certs.EmbeddedCACertPEM()
-	logEmbeddedCAInfo(embeddedCACertPEM)
-
-	certManager, err := certs.NewEmbeddedManager()
+	certPath := appdata.CACertFilePath()
+	keyPath := filepath.Join(appdata.DataRootPath(), "ca.key")
+	if _, err := certs.RemoveCompromisedCA(certPath, keyPath, cursor.RemoveCACertInstalled); err != nil {
+		return err
+	}
+	certManager, caCertPEM, err := certs.LoadOrCreateManager(certPath, keyPath)
 	if err != nil {
 		return err
 	}
@@ -79,7 +78,7 @@ func Run(resources EmbeddedResources) error {
 	if err != nil {
 		return err
 	}
-	proxyService := bridge.NewProxyService(proxyServer, certManager, embeddedCACertPEM)
+	proxyService := bridge.NewProxyService(proxyServer, certManager, caCertPEM)
 	adAssetBaseURL := defaultBackendBaseURL
 	if cfg, err := proxyService.LoadUserConfig(); err == nil {
 		adAssetBaseURL = browserReachableLoopbackBaseURL(cfg.BackendListenAddr)
@@ -414,33 +413,4 @@ func browserReachableLoopbackBaseURL(listenAddr string) string {
 		host = "127.0.0.1"
 	}
 	return "http://" + net.JoinHostPort(host, port)
-}
-
-// logEmbeddedCAInfo 用于处理与 logEmbeddedCAInfo 相关的逻辑。
-func logEmbeddedCAInfo(certPEM []byte) {
-	if len(certPEM) == 0 {
-		logger.Errorf("embedded CA is empty")
-		return
-	}
-	cert, err := parseEmbeddedCert(certPEM)
-	if err != nil {
-		logger.Errorf("parse embedded CA failed: %v", err)
-		return
-	}
-	sum := sha256.Sum256(cert.Raw)
-	logger.Infof(
-		"embedded CA loaded: sha256=%s subject=%s valid=%s~%s",
-		strings.ToUpper(hex.EncodeToString(sum[:])),
-		cert.Subject.String(),
-		cert.NotBefore.Format(time.RFC3339),
-		cert.NotAfter.Format(time.RFC3339),
-	)
-}
-
-// parseEmbeddedCert 用于处理与 parseEmbeddedCert 相关的逻辑。
-func parseEmbeddedCert(data []byte) (*x509.Certificate, error) {
-	if block, _ := pem.Decode(data); block != nil {
-		return x509.ParseCertificate(block.Bytes)
-	}
-	return x509.ParseCertificate(data)
 }

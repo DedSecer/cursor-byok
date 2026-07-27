@@ -55,6 +55,9 @@ func New() (*Host, error) {
 	netproxy.InstallDefaultTransport()
 	certPath := appdata.CACertFilePath()
 	keyPath := filepath.Join(appdata.DataRootPath(), "ca.key")
+	if _, err := certs.RemoveCompromisedCA(certPath, keyPath, cursorhost.RemoveCACertInstalled); err != nil {
+		return nil, err
+	}
 	certManager, certPEM, err := certs.LoadOrCreateManager(certPath, keyPath)
 	if err != nil {
 		return nil, err

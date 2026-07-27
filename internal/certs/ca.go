@@ -9,7 +9,6 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
-	_ "embed"
 	"encoding/pem"
 	"errors"
 	"math/big"
@@ -19,16 +18,6 @@ import (
 	"sync"
 	"time"
 )
-
-// embeddedCACertPEM 表示当前模块中的 embeddedCACertPEM 状态值。
-//
-//go:embed ca.crt
-var embeddedCACertPEM []byte
-
-// embeddedCAKeyPEM 表示当前模块中的 embeddedCAKeyPEM 状态值。
-//
-//go:embed ca.key
-var embeddedCAKeyPEM []byte
 
 // Manager 定义了当前模块中的 Manager 类型。
 type Manager struct {
@@ -50,21 +39,6 @@ func NewManager(caCertPath, caKeyPath string) (*Manager, error) {
 		return nil, err
 	}
 	return NewManagerFromPEM(certPEM, keyPEM)
-}
-
-// NewEmbeddedManager 用于处理与 NewEmbeddedManager 相关的逻辑。
-func NewEmbeddedManager() (*Manager, error) {
-	return NewManagerFromPEM(embeddedCACertPEM, embeddedCAKeyPEM)
-}
-
-// EmbeddedCACertPEM 用于处理与 EmbeddedCACertPEM 相关的逻辑。
-func EmbeddedCACertPEM() []byte {
-	return cloneBytes(embeddedCACertPEM)
-}
-
-// EmbeddedCAKeyPEM 用于处理与 EmbeddedCAKeyPEM 相关的逻辑。
-func EmbeddedCAKeyPEM() []byte {
-	return cloneBytes(embeddedCAKeyPEM)
 }
 
 // NewManagerFromPEM 用于处理与 NewManagerFromPEM 相关的逻辑。
@@ -248,11 +222,4 @@ func normalizeHost(serverName string) string {
 		}
 	}
 	return serverName
-}
-
-// cloneBytes 用于处理与 cloneBytes 相关的逻辑。
-func cloneBytes(src []byte) []byte {
-	dst := make([]byte, len(src))
-	copy(dst, src)
-	return dst
 }
