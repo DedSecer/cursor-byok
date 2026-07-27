@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -32,11 +33,13 @@ func TestLoadOrCreateManagerCreatesInstallationScopedCA(t *testing.T) {
 	if first == nil || second == nil || !bytes.Equal(firstCert, secondCert) {
 		t.Fatal("installation CA was not reused")
 	}
-	info, err := os.Stat(keyPath)
-	if err != nil {
-		t.Fatalf("stat private key: %v", err)
-	}
-	if info.Mode().Perm() != 0o600 {
-		t.Fatalf("private key mode = %o, want 600", info.Mode().Perm())
+	if runtime.GOOS != "windows" {
+		info, err := os.Stat(keyPath)
+		if err != nil {
+			t.Fatalf("stat private key: %v", err)
+		}
+		if info.Mode().Perm() != 0o600 {
+			t.Fatalf("private key mode = %o, want 600", info.Mode().Perm())
+		}
 	}
 }
