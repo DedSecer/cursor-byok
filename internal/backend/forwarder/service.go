@@ -305,6 +305,7 @@ func NewService(historyRoot string, resolver modeladapter.ChannelResolver) *Serv
 		checkpointBlobs:    make(map[string]*checkpointBlobCacheEntry),
 	}
 	service.startHistoryMaintenance()
+	store.SyncAllCursorTranscriptsBestEffort()
 	return service
 }
 
@@ -696,6 +697,11 @@ func (service *Service) handleRunIntent(intent InboundIntent) error {
 	conversation, effectiveMode, turnSeq, initialEntries, err := service.bootstrapRuntimeConversation(intent)
 	if err != nil {
 		return err
+	}
+	if intent.RequestContext != nil {
+		if folder := normalizeAgentTranscriptsFolder(intent.RequestContext.GetEnv().GetAgentTranscriptsFolder()); folder != "" {
+			conversation.AgentTranscriptsFolder = folder
+		}
 	}
 	rewindDecision := service.decideRunRewind(intent, conversation)
 	if rewindDecision.Evaluated && !rewindDecision.Apply {
