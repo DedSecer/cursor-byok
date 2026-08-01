@@ -293,6 +293,7 @@ func upsertRecentUsageEvent(items []usageFileEvent, event usageFileEvent) []usag
 type UsageEvent struct {
 	Sequence           int64     `json:"sequence"`
 	EventID            string    `json:"eventId"`
+	Kind               string    `json:"kind"`
 	Status             string    `json:"status"`
 	SourceProviderID   string    `json:"sourceProviderId"`
 	SourceProviderName string    `json:"sourceProviderName"`
@@ -483,7 +484,8 @@ func appendUsageJournalEvent(path string, event usageFileEvent) error {
 
 func exportUsageEvent(event usageFileEvent) UsageEvent {
 	return UsageEvent{
-		Sequence: event.Sequence, EventID: event.EventID, Status: event.Status,
+		Sequence: event.Sequence, EventID: event.EventID, Kind: normalizeUsageEventKind(event.Kind),
+		Status:           event.Status,
 		SourceProviderID: event.SourceProviderID, SourceProviderName: event.SourceProviderName,
 		ProviderType: event.ProviderType, ChannelID: event.ChannelID,
 		RequestModel: event.RequestModel, Model: event.Model, PricingModel: event.PricingModel,

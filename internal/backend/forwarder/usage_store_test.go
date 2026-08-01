@@ -55,6 +55,44 @@ func TestUsageJournalCompactsOnlyConfirmedEvents(t *testing.T) {
 	}
 }
 
+func TestUsageJournalExportsEventKind(t *testing.T) {
+	store := NewUsageFileStore(t.TempDir())
+	for _, event := range []usageFileEvent{
+		{
+			EventID:          "provider-event",
+			Kind:             usageEventKindProvider,
+			SourceProviderID: "provider",
+			Model:            "model",
+			FirstTokenMS:     42,
+			At:               time.Unix(1, 0),
+		},
+		{
+			EventID: "turn-event",
+			Kind:    usageEventKindTurn,
+			Status:  usageTurnStatusDone,
+			At:      time.Unix(2, 0),
+		},
+	} {
+		if err := store.UpsertEvent(event); err != nil {
+			t.Fatalf("upsert %s: %v", event.EventID, err)
+		}
+	}
+
+	page, err := store.EventsAfter(0, 10)
+	if err != nil {
+		t.Fatalf("read usage events: %v", err)
+	}
+	if len(page.Events) != 2 {
+		t.Fatalf("expected two events, got %d", len(page.Events))
+	}
+	if page.Events[0].Kind != usageEventKindProvider || page.Events[1].Kind != usageEventKindTurn {
+		t.Fatalf("event kinds were not preserved: %+v", page.Events)
+	}
+	if page.Events[0].FirstTokenMS != 42 {
+		t.Fatalf("first token latency was not preserved: %+v", page.Events[0])
+	}
+}
+
 func TestUsageJournalPreservesUsageStatus(t *testing.T) {
 	store := NewUsageFileStore(t.TempDir())
 	if err := store.UpsertEvent(usageFileEvent{

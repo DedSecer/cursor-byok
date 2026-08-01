@@ -1692,6 +1692,7 @@ func (service *Service) generateCompactionSummary(ctx context.Context, stream *A
 				UsageStatus:       event.UsageStatus,
 				CacheReadPresent:  event.CacheReadPresent,
 				CacheWritePresent: event.CacheWritePresent,
+				FirstTokenMS:      event.FirstTokenMS,
 			}
 			return nil
 		case modeladapter.ModelEventKindProviderError:

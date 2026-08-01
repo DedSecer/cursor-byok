@@ -621,6 +621,7 @@ func (service *Service) applyProviderModelEvent(stream *ActiveStream, event mode
 			UsageStatus:        event.UsageStatus,
 			CacheReadPresent:   event.CacheReadPresent,
 			CacheWritePresent:  event.CacheWritePresent,
+			FirstTokenMS:       event.FirstTokenMS,
 		}
 		stream.UpdatedAt = time.Now().UTC()
 		stream.mu.Unlock()

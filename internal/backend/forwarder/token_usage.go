@@ -28,6 +28,7 @@ type turnUsageSnapshot struct {
 	UsageStatus        string
 	CacheReadPresent   bool
 	CacheWritePresent  bool
+	FirstTokenMS       int64
 }
 
 func (snapshot turnUsageSnapshot) hasAny() bool {
@@ -373,6 +374,7 @@ func (service *Service) recordTurnUsageSnapshot(stream *ActiveStream, conversati
 			StatusCode:         statusCode,
 			Error:              strings.TrimSpace(errorText),
 			LatencyMS:          durationMS,
+			FirstTokenMS:       nonNegativeInt64(usage.FirstTokenMS),
 			DurationMS:         durationMS,
 			IsStreaming:        true,
 			At:                 lastEventAt,

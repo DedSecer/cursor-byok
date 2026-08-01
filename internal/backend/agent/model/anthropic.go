@@ -658,6 +658,7 @@ func (adapter *AnthropicAdapter) Stream(ctx context.Context, req StreamRequest, 
 				UsagePresent:      usagePresent,
 				CacheReadPresent:  cacheReadPresent,
 				CacheWritePresent: cacheWritePresent,
+				FirstTokenMS:      computeTTFTMS(startedAt, firstEventAt),
 				FinishReason:      finishReason,
 			}); err != nil {
 				return err

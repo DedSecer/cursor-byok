@@ -247,6 +247,8 @@ type ModelEvent struct {
 	CacheReadPresent bool
 	// CacheWritePresent 表示 provider 明确返回了 cache write token 字段。
 	CacheWritePresent bool
+	// FirstTokenMS 表示单次 provider call 开始到首个上游流事件的耗时。
+	FirstTokenMS int64
 	// ToolInvocation 表示完成收口的工具调用意图。
 	ToolInvocation *runtimecore.ToolInvocation
 	// FinishReason 表示回合结束原因。
