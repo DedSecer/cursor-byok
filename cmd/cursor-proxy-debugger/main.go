@@ -21,6 +21,7 @@ func main() {
 	flag.StringVar(&config.ProxyAddr, "proxy-addr", "127.0.0.1:9090", "HTTP/HTTPS 代理监听地址")
 	flag.StringVar(&config.UIAddr, "ui-addr", "127.0.0.1:9091", "调试界面监听地址")
 	flag.StringVar(&config.TargetHost, "target-host", "api2.cursor.sh", "需要解密和抓取的目标主机")
+	flag.StringVar(&config.DataDir, "data-dir", "", "调试器 CA 数据目录")
 	flag.IntVar(&config.MaxExchanges, "max-exchanges", 200, "内存中保留的最大请求数")
 	flag.BoolVar(&openBrowser, "open", true, "启动后打开浏览器")
 	flag.Parse()

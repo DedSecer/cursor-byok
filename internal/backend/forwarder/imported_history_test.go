@@ -92,6 +92,63 @@ func TestImportedTurnIDsPersistThroughConversationStore(t *testing.T) {
 	}
 }
 
+func TestImportedBlobClosurePersistsAcrossStoreRestart(t *testing.T) {
+	root := t.TempDir()
+	parent := compactionAppendOnlyConversation(t)
+	parent.Entries = parent.Entries[:2]
+	parent.NextEntrySeq = 3
+	parent.NextTurnSeq = 2
+	projection, err := NewHistoryProjector().ProjectCheckpointProjection(parent)
+	if err != nil {
+		t.Fatalf("ProjectCheckpointProjection() error = %v", err)
+	}
+	prefetched := make([]*agentv1.PreFetchedBlob, 0, len(projection.Blobs))
+	for _, blob := range projection.Blobs {
+		prefetched = append(prefetched, &agentv1.PreFetchedBlob{Id: blob.ID, Value: blob.Data})
+	}
+	state := proto.Clone(projection.State).(*agentv1.ConversationStateStructure)
+	state.RootPromptMessagesJson = nil
+	conversation, err := newRuntimeConversation("persisted-fork", agentv1.AgentMode_AGENT_MODE_AGENT)
+	if err != nil {
+		t.Fatalf("newRuntimeConversation() error = %v", err)
+	}
+	if _, err := (&Service{}).importConversationState(conversation, state, prefetched); err != nil {
+		t.Fatalf("importConversationState() error = %v", err)
+	}
+	store := NewConversationFileStore(root)
+	if _, err := store.SaveConversationWithEntries(conversation.ConversationID, conversation, nil); err != nil {
+		t.Fatalf("SaveConversationWithEntries() error = %v", err)
+	}
+
+	loaded, err := NewConversationFileStore(root).LoadConversation(conversation.ConversationID)
+	if err != nil {
+		t.Fatalf("LoadConversation() after restart error = %v", err)
+	}
+	if len(loaded.ImportedTurnIDs) != 1 {
+		t.Fatalf("loaded imported turns = %d, want 1", len(loaded.ImportedTurnIDs))
+	}
+	turnData, ok := loaded.ImportedBlobs.resolve(loaded.ImportedTurnIDs[0])
+	if !ok {
+		t.Fatal("loaded imported turn blob is missing")
+	}
+	turn := &agentv1.ConversationTurnStructure{}
+	if err := proto.Unmarshal(turnData, turn); err != nil {
+		t.Fatalf("decode loaded imported turn: %v", err)
+	}
+	agentTurn := turn.GetAgentConversationTurn()
+	if agentTurn == nil {
+		t.Fatal("loaded imported turn is not an agent turn")
+	}
+	if _, ok := loaded.ImportedBlobs.resolve(agentTurn.GetUserMessage()); !ok {
+		t.Fatal("loaded imported user message blob is missing")
+	}
+	for _, stepID := range agentTurn.GetSteps() {
+		if _, ok := loaded.ImportedBlobs.resolve(stepID); !ok {
+			t.Fatalf("loaded imported step blob %x is missing", stepID)
+		}
+	}
+}
+
 func TestRewindImportedTurnPrefixUsesClientForkPoint(t *testing.T) {
 	ids := make([][]byte, 3)
 	for index := range ids {

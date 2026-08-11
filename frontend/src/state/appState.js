@@ -508,6 +508,11 @@ function createEmptyHomeMetrics() {
     promptTokensTotal: 0,
     cacheReadTokens: 0,
     cacheWriteTokens: 0,
+    cacheObservedCalls: 0,
+    cacheObservedInputTokens: 0,
+    cacheObservedReadTokens: 0,
+    cacheObservedWriteTokens: 0,
+    cacheObservationPartial: false,
     cacheHitRate: null,
   };
 }
@@ -566,6 +571,11 @@ function normalizeHomeMetrics(source) {
     promptTokensTotal: asPositiveInteger(raw.promptTokensTotal),
     cacheReadTokens: asPositiveInteger(raw.cacheReadTokens),
     cacheWriteTokens: asPositiveInteger(raw.cacheWriteTokens),
+    cacheObservedCalls: asPositiveInteger(raw.cacheObservedCalls),
+    cacheObservedInputTokens: asPositiveInteger(raw.cacheObservedInputTokens),
+    cacheObservedReadTokens: asPositiveInteger(raw.cacheObservedReadTokens),
+    cacheObservedWriteTokens: asPositiveInteger(raw.cacheObservedWriteTokens),
+    cacheObservationPartial: asBoolean(raw.cacheObservationPartial),
     cacheHitRate: asNullableRate(raw.cacheHitRate),
   };
 }

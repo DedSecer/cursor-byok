@@ -9,6 +9,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -28,6 +29,7 @@ type exchangeContext struct {
 type Server struct {
 	config      Config
 	certManager *certs.Manager
+	caCertPEM   []byte
 	store       *exchangeStore
 	counter     atomic.Uint64
 	proxyServer *http.Server
@@ -43,13 +45,17 @@ func New(config Config) (*Server, error) {
 	if err := validateLoopbackAddress(config.UIAddr); err != nil {
 		return nil, err
 	}
-	manager, err := certs.NewEmbeddedManager()
+	manager, caCertPEM, err := certs.LoadOrCreateManager(
+		filepath.Join(config.DataDir, "ca.crt"),
+		filepath.Join(config.DataDir, "ca.key"),
+	)
 	if err != nil {
 		return nil, fmt.Errorf("加载 MITM CA 失败：%w", err)
 	}
 	server := &Server{
 		config:      config,
 		certManager: manager,
+		caCertPEM:   caCertPEM,
 		store:       newExchangeStore(config.MaxExchanges),
 	}
 	proxyHandler, err := server.newProxyHandler()

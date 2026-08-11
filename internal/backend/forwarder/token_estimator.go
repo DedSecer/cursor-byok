@@ -86,6 +86,74 @@ func estimateTextTokens(text string) int64 {
 	return estimated
 }
 
+type usageEstimateAccumulator struct {
+	promptTokens int64
+	text         strings.Builder
+	reasoning    strings.Builder
+	toolCalls    []modeladapter.ToolCallDescriptor
+}
+
+func newUsageEstimateAccumulator(req ProviderRequest) *usageEstimateAccumulator {
+	return &usageEstimateAccumulator{
+		promptTokens: estimateModelMessagesTokens(req.Messages) + estimateToolDescriptorsTokens(req.Tools),
+	}
+}
+
+func (accumulator *usageEstimateAccumulator) decorate(event modeladapter.ModelEvent) modeladapter.ModelEvent {
+	if accumulator == nil {
+		return event
+	}
+	switch event.Kind {
+	case modeladapter.ModelEventKindTextDelta:
+		_, _ = accumulator.text.WriteString(event.Text)
+	case modeladapter.ModelEventKindThinkingDelta:
+		_, _ = accumulator.reasoning.WriteString(event.Text)
+	case modeladapter.ModelEventKindToolLikeCompleted:
+		if event.ToolInvocation != nil {
+			accumulator.toolCalls = append(accumulator.toolCalls, modeladapter.ToolCallDescriptor{
+				ID:   strings.TrimSpace(event.ToolInvocation.CallID),
+				Type: "function",
+				Function: modeladapter.ToolCallFunctionShape{
+					Name:      strings.TrimSpace(event.ToolInvocation.ToolName),
+					Arguments: string(event.ToolInvocation.ArgsJSON),
+				},
+			})
+		}
+	case modeladapter.ModelEventKindTurnFinished:
+		return accumulator.finalize(event)
+	}
+	return event
+}
+
+func (accumulator *usageEstimateAccumulator) finalize(event modeladapter.ModelEvent) modeladapter.ModelEvent {
+	if event.UsagePresent {
+		event.UsageStatus = modeladapter.UsageStatusReported
+		return event
+	}
+	hasOutput := strings.TrimSpace(accumulator.text.String()) != "" ||
+		strings.TrimSpace(accumulator.reasoning.String()) != "" ||
+		len(accumulator.toolCalls) > 0
+	if accumulator.promptTokens <= 0 && !hasOutput {
+		event.UsageStatus = modeladapter.UsageStatusMissing
+		return event
+	}
+	outputTokens := int64(0)
+	if hasOutput {
+		outputTokens = estimateModelMessageTokens(modeladapter.Message{
+			Role:             "assistant",
+			Content:          accumulator.text.String(),
+			ReasoningContent: accumulator.reasoning.String(),
+			ToolCalls:        accumulator.toolCalls,
+		})
+	}
+	event.InputTokens = nonNegativeInt64(accumulator.promptTokens)
+	event.OutputTokens = nonNegativeInt64(outputTokens)
+	event.CacheReadTokens = 0
+	event.CacheWriteTokens = 0
+	event.UsageStatus = modeladapter.UsageStatusEstimated
+	return event
+}
+
 func estimateModelContentPartsTokens(content string, parts []modeladapter.ContentPart) int64 {
 	if len(parts) == 0 {
 		return 0

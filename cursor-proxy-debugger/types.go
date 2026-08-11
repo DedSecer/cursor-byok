@@ -1,6 +1,10 @@
 package proxydebugger
 
-import "time"
+import (
+	"os"
+	"path/filepath"
+	"time"
+)
 
 const (
 	defaultProxyAddr       = "127.0.0.1:9090"
@@ -16,6 +20,7 @@ type Config struct {
 	ProxyAddr       string
 	UIAddr          string
 	TargetHost      string
+	DataDir         string
 	MaxExchanges    int
 	MaxCaptureBytes int
 	MaxFrames       int
@@ -31,6 +36,9 @@ func (config Config) normalized() Config {
 	if config.TargetHost == "" {
 		config.TargetHost = defaultTargetHost
 	}
+	if config.DataDir == "" {
+		config.DataDir = defaultDataDir()
+	}
 	if config.MaxExchanges <= 0 {
 		config.MaxExchanges = defaultMaxExchanges
 	}
@@ -41,6 +49,14 @@ func (config Config) normalized() Config {
 		config.MaxFrames = defaultMaxFrames
 	}
 	return config
+}
+
+func defaultDataDir() string {
+	root, err := os.UserConfigDir()
+	if err != nil || root == "" {
+		root = "."
+	}
+	return filepath.Join(root, "cursor-byok", "proxy-debugger")
 }
 
 // ExchangeSummary is the compact request-list representation.

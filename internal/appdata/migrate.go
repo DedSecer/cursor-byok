@@ -8,7 +8,9 @@ import (
 )
 
 func ensureAssistantHome() error {
-	migrateLegacyAssistantHome()
+	if !UsesManagedRoot() {
+		migrateLegacyAssistantHome()
+	}
 	if err := os.MkdirAll(RootDir(), 0o755); err != nil {
 		return fmt.Errorf("create assistant home: %w", err)
 	}

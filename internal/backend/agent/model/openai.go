@@ -620,6 +620,7 @@ func (adapter *OpenAIAdapter) streamChatCompletions(ctx context.Context, req Str
 			UsagePresent:      usagePresent,
 			CacheReadPresent:  cacheReadPresent,
 			CacheWritePresent: cacheWritePresent,
+			FirstTokenMS:      computeTTFTMS(startedAt, firstEventAt),
 			FinishReason:      finishReason,
 		})
 	}
@@ -1140,6 +1141,7 @@ func (adapter *OpenAIAdapter) streamResponses(ctx context.Context, req StreamReq
 			UsagePresent:      usagePresent,
 			CacheReadPresent:  cacheReadPresent,
 			CacheWritePresent: cacheWritePresent,
+			FirstTokenMS:      computeTTFTMS(startedAt, firstEventAt),
 			FinishReason:      effectiveFinishReason(),
 		})
 	}

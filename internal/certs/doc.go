@@ -1,2 +1,2 @@
-// Package certs 负责管理本地 MITM 所需的内置 CA 证书与 TLS 材料。
+// Package certs 管理本地 MITM 所需的安装级 CA 与 TLS 材料。
 package certs

@@ -9,15 +9,19 @@ import (
 
 type usageFileDocument struct {
 	Totals struct {
-		ProviderCalls     int64 `json:"provider_calls"`
-		TurnsTotal        int64 `json:"turns_total"`
-		ValidTurnsTotal   int64 `json:"valid_turns_total"`
-		InvalidTurnsTotal int64 `json:"invalid_turns_total"`
-		InputTokens       int64 `json:"input_tokens"`
-		OutputTokens      int64 `json:"output_tokens"`
-		CacheReadTokens   int64 `json:"cache_read_tokens"`
-		CacheWriteTokens  int64 `json:"cache_write_tokens"`
-		TotalTokens       int64 `json:"total_tokens"`
+		ProviderCalls            int64 `json:"provider_calls"`
+		TurnsTotal               int64 `json:"turns_total"`
+		ValidTurnsTotal          int64 `json:"valid_turns_total"`
+		InvalidTurnsTotal        int64 `json:"invalid_turns_total"`
+		InputTokens              int64 `json:"input_tokens"`
+		OutputTokens             int64 `json:"output_tokens"`
+		CacheReadTokens          int64 `json:"cache_read_tokens"`
+		CacheWriteTokens         int64 `json:"cache_write_tokens"`
+		TotalTokens              int64 `json:"total_tokens"`
+		CacheObservedCalls       int64 `json:"cache_observed_calls"`
+		CacheObservedInputTokens int64 `json:"cache_observed_input_tokens"`
+		CacheObservedReadTokens  int64 `json:"cache_observed_read_tokens"`
+		CacheObservedWriteTokens int64 `json:"cache_observed_write_tokens"`
 	} `json:"totals"`
 }
 
@@ -34,22 +38,31 @@ func LoadUsageSummary(path string) (Summary, error) {
 		return Summary{}, fmt.Errorf("decode usage file: %w", err)
 	}
 	totals := Totals{
-		InputTokens:        doc.Totals.InputTokens,
-		OutputTokens:       doc.Totals.OutputTokens,
-		CacheReadTokens:    doc.Totals.CacheReadTokens,
-		CacheWriteTokens:   doc.Totals.CacheWriteTokens,
-		PromptTokensTotal:  doc.Totals.InputTokens + doc.Totals.CacheReadTokens + doc.Totals.CacheWriteTokens,
-		RequestTokensTotal: doc.Totals.TotalTokens,
+		InputTokens:              doc.Totals.InputTokens,
+		OutputTokens:             doc.Totals.OutputTokens,
+		CacheReadTokens:          doc.Totals.CacheReadTokens,
+		CacheWriteTokens:         doc.Totals.CacheWriteTokens,
+		PromptTokensTotal:        doc.Totals.InputTokens + doc.Totals.CacheReadTokens + doc.Totals.CacheWriteTokens,
+		RequestTokensTotal:       doc.Totals.TotalTokens,
+		CacheObservedCalls:       int(doc.Totals.CacheObservedCalls),
+		CacheObservedInputTokens: doc.Totals.CacheObservedInputTokens,
+		CacheObservedReadTokens:  doc.Totals.CacheObservedReadTokens,
+		CacheObservedWriteTokens: doc.Totals.CacheObservedWriteTokens,
 	}
 	return Summary{
-		ProviderCallsTotal: int(doc.Totals.ProviderCalls),
-		TurnsTotal:         int(doc.Totals.TurnsTotal),
-		ValidTurnsTotal:    int(doc.Totals.ValidTurnsTotal),
-		InvalidTurnsTotal:  int(doc.Totals.InvalidTurnsTotal),
-		RequestTokensTotal: totals.RequestTokensTotal,
-		PromptTokensTotal:  totals.PromptTokensTotal,
-		CacheReadTokens:    totals.CacheReadTokens,
-		CacheWriteTokens:   totals.CacheWriteTokens,
-		CacheHitRate:       cacheHitRateFromTotals(totals),
+		ProviderCallsTotal:       int(doc.Totals.ProviderCalls),
+		TurnsTotal:               int(doc.Totals.TurnsTotal),
+		ValidTurnsTotal:          int(doc.Totals.ValidTurnsTotal),
+		InvalidTurnsTotal:        int(doc.Totals.InvalidTurnsTotal),
+		RequestTokensTotal:       totals.RequestTokensTotal,
+		PromptTokensTotal:        totals.PromptTokensTotal,
+		CacheReadTokens:          totals.CacheReadTokens,
+		CacheWriteTokens:         totals.CacheWriteTokens,
+		CacheObservedCalls:       int(doc.Totals.CacheObservedCalls),
+		CacheObservedInputTokens: totals.CacheObservedInputTokens,
+		CacheObservedReadTokens:  totals.CacheObservedReadTokens,
+		CacheObservedWriteTokens: totals.CacheObservedWriteTokens,
+		CacheObservationPartial:  doc.Totals.CacheObservedCalls > 0 && doc.Totals.CacheObservedCalls < doc.Totals.ProviderCalls,
+		CacheHitRate:             cacheHitRateFromTotals(totals),
 	}, nil
 }

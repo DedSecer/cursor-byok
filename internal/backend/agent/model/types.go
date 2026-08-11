@@ -15,6 +15,13 @@ const (
 	ReasoningSignatureSourceAnthropic = "anthropic"
 	// ReasoningSignatureSourceOpenAIResponses 表示 signature 来自 OpenAI Responses encrypted reasoning content。
 	ReasoningSignatureSourceOpenAIResponses = "openai_responses"
+
+	// UsageStatusReported 表示 token usage 由 provider 明确返回。
+	UsageStatusReported = "reported"
+	// UsageStatusEstimated 表示 provider 未返回 usage，token 由本地估算。
+	UsageStatusEstimated = "estimated"
+	// UsageStatusMissing 表示 provider 未返回 usage，且没有足够信息进行估算。
+	UsageStatusMissing = "missing"
 )
 
 // Message 表示模型适配层统一使用的消息结构。
@@ -84,8 +91,14 @@ type StreamRequest struct {
 	APIKey string
 	// ProviderModelID 表示 provider 侧真实模型标识。
 	ProviderModelID string
+	// PricingModel 表示成本统计使用的模型；留空时使用 ProviderModelID。
+	PricingModel string
 	// ResolvedChannelID 表示本次请求实际命中的 adapter 渠道 ID。
 	ResolvedChannelID string
+	// SourceProviderID 表示配置系统中的稳定 Provider 主键。
+	SourceProviderID string
+	// SourceProviderName 表示请求发生时的 Provider 名称快照。
+	SourceProviderName string
 	// ResolvedChannelName 表示本次请求实际命中的 adapter 展示名。
 	ResolvedChannelName string
 	// ResolvedContextWindowTokens 表示本次请求实际命中的 adapter 上下文窗口。
@@ -176,6 +189,16 @@ const (
 type ModelEvent struct {
 	// Kind 表示事件类型。
 	Kind ModelEventKind
+	// SourceProviderID 是配置系统中的稳定 Provider 主键。
+	SourceProviderID string
+	// SourceProviderName 是请求发生时的 Provider 名称快照。
+	SourceProviderName string
+	// ChannelID 是 sidecar 的运行时渠道标识。
+	ChannelID string
+	// RequestModel 是 Cursor 客户端选择的模型引用。
+	RequestModel string
+	// PricingModel 是本次请求采用的计价模型。
+	PricingModel string
 	// OccurredAt 表示当前 provider 事件发生时间。
 	OccurredAt time.Time
 	// Provider 表示当前事件所属 provider。
@@ -218,10 +241,14 @@ type ModelEvent struct {
 	CacheWriteTokens int64
 	// UsagePresent 表示 provider 本次流里实际返回过 usage 对象。
 	UsagePresent bool
+	// UsageStatus 描述 token 来源：reported、estimated 或 missing。
+	UsageStatus string
 	// CacheReadPresent 表示 provider 明确返回了 cache read token 字段。
 	CacheReadPresent bool
 	// CacheWritePresent 表示 provider 明确返回了 cache write token 字段。
 	CacheWritePresent bool
+	// FirstTokenMS 表示单次 provider call 开始到首个上游流事件的耗时。
+	FirstTokenMS int64
 	// ToolInvocation 表示完成收口的工具调用意图。
 	ToolInvocation *runtimecore.ToolInvocation
 	// FinishReason 表示回合结束原因。
