@@ -79,7 +79,7 @@ func (service *Service) importConversationState(item *ConversationFile, state *a
 		item.NextTurnSeq = minimumNextTurnSeq
 	}
 	entries := make([]HistoryEntry, 0, 2)
-	if messages, err := importedConversationStateModelMessages(state, blobs); err != nil {
+	if messages, err := importedConversationStateModelMessagesWithBlobs(state, blobs); err != nil {
 		return nil, err
 	} else {
 		for _, message := range messages {
@@ -132,7 +132,11 @@ func (service *Service) importConversationState(item *ConversationFile, state *a
 	return entries, nil
 }
 
-func importedConversationStateModelMessages(state *agentv1.ConversationStateStructure, blobs importedBlobStore) ([]modeladapter.Message, error) {
+func importedConversationStateModelMessages(state *agentv1.ConversationStateStructure) ([]modeladapter.Message, error) {
+	return importedConversationStateModelMessagesWithBlobs(state, nil)
+}
+
+func importedConversationStateModelMessagesWithBlobs(state *agentv1.ConversationStateStructure, blobs importedBlobStore) ([]modeladapter.Message, error) {
 	if state == nil {
 		return nil, nil
 	}

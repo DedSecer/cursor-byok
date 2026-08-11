@@ -147,6 +147,7 @@ func (manager *Manager) LegacyRuntimeSnapshot(_ context.Context) (legacyruntime.
 	for _, item := range cfg.ModelAdapters {
 		adapters = append(adapters, legacyruntime.ModelAdapterConfig{
 			ID:                          item.ID,
+			Sort:                        item.Sort,
 			SourceProviderID:            item.SourceProviderID,
 			SourceProviderName:          item.SourceProviderName,
 			DisplayName:                 item.DisplayName,
@@ -176,20 +177,6 @@ func (manager *Manager) LegacyRuntimeSnapshot(_ context.Context) (legacyruntime.
 		ProviderStreamIdleTimeout: cfg.ProviderStreamIdleTimeout,
 		ModelAdapters:             adapters,
 	}, nil
-}
-
-func (manager *Manager) RouteMode(hasUpstreamURL bool) string {
-	if !hasUpstreamURL {
-		return DefaultRoutingMode
-	}
-	if manager == nil {
-		return DefaultRoutingMode
-	}
-	mode := normalizeRoutingMode(manager.Current().Routing.Mode)
-	if mode == "" {
-		return DefaultRoutingMode
-	}
-	return mode
 }
 
 func (manager *Manager) setCurrent(cfg Config) {

@@ -115,19 +115,6 @@ func reachableImportedBlobs(turnIDs [][]byte, source importedBlobStore) ([][]byt
 	return ids, reachable, nil
 }
 
-func importedBlobStoreFromCheckpoint(blobs []CheckpointBlob) importedBlobStore {
-	if len(blobs) == 0 {
-		return nil
-	}
-	store := make(importedBlobStore, len(blobs))
-	for _, blob := range blobs {
-		if len(blob.ID) == sha256.Size && len(blob.Data) > 0 {
-			store[string(blob.ID)] = append([]byte(nil), blob.Data...)
-		}
-	}
-	return store
-}
-
 func (store importedBlobStore) resolve(id []byte) ([]byte, bool) {
 	if len(id) == 0 || len(store) == 0 {
 		return nil, false

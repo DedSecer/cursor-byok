@@ -36,7 +36,7 @@ type runRewindMatch struct {
 }
 
 func (service *Service) decideRunRewind(intent InboundIntent, conversation *ConversationFile) runRewindDecision {
-	decision := runRewindDecision{}
+	decision := runRewindDecision{ClientTurnCount: -1}
 	if !shouldEvaluateRunRewind(intent) {
 		return decision
 	}
@@ -121,7 +121,7 @@ func selectRunRewindMatch(matches []runRewindMatch, clientTurnCount int, hasClie
 	if len(matches) == 0 {
 		return runRewindMatch{}, "no_match"
 	}
-	if hasClientTurnCount {
+	if hasClientTurnCount && clientTurnCount >= 0 {
 		targetTurnSeq := int64(clientTurnCount) + 1
 		for _, match := range matches {
 			if match.Entry.TurnSeq == targetTurnSeq {

@@ -15,6 +15,7 @@ import (
 	serverconfig "cursor/internal/backend/server/config"
 	"cursor/internal/certs"
 	cursorhost "cursor/internal/cursor"
+	"cursor/internal/cursoraccount"
 	"cursor/internal/mitm"
 	"cursor/internal/netproxy"
 	legacyruntime "cursor/internal/runtime"
@@ -67,7 +68,11 @@ func New() (*Host, error) {
 		return nil, statusErr
 	}
 	store := serverconfig.NewStore(appdata.ConfigFilePath(), appdata.LogsRootPath())
-	backendHost, err := backend.NewHost(store)
+	controlPlaneAuth := cursoraccount.NewManager(
+		filepath.Join(appdata.DataRootPath(), "cursor-account.json"),
+		netproxy.NewHTTPClient(15*time.Second),
+	)
+	backendHost, err := backend.NewHost(store, controlPlaneAuth)
 	if err != nil {
 		return nil, err
 	}

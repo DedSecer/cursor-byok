@@ -81,6 +81,7 @@ type HistoryEntry struct {
 	Seq              int64           `json:"seq"`
 	TurnSeq          int64           `json:"turn_seq"`
 	RequestID        string          `json:"request_id,omitempty"`
+	IdempotencyKey   string          `json:"idempotency_key,omitempty"`
 	Role             string          `json:"role"`
 	Kind             string          `json:"kind"`
 	ToolCallID       string          `json:"tool_call_id,omitempty"`
@@ -165,10 +166,9 @@ type ActiveStream struct {
 	ProviderUsage                               turnUsageSnapshot
 	ProviderTerminalToolInvocation              bool
 	PendingCompaction                           *PendingCompaction
-	PendingCheckpointBlobWrites                 map[uint32]pendingCheckpointBlobWrite
-	PendingCheckpointBlobRequests               map[string]uint32
+	PendingCheckpointBlobWrites                 map[uint32]string
+	ConfirmedCheckpointBlobs                    map[string]struct{}
 	NextCheckpointBlobRequestID                 uint32
-	NextCheckpointRevision                      uint64
 	PendingCheckpoint                           *pendingCheckpointPublish
 
 	Backlog                     []StreamEvent
@@ -226,30 +226,25 @@ type pendingTurnCompletion struct {
 	Disposition    pendingCompletionDisposition
 }
 
-type pendingCheckpointBlobWrite struct {
-	Key      string
-	Revision uint64
-}
-
 type checkpointTerminalActionKind uint8
 
 const (
 	checkpointTerminalActionNone checkpointTerminalActionKind = iota
 	checkpointTerminalActionComplete
-	checkpointTerminalActionCancel
+	checkpointTerminalActionFail
 )
 
 type checkpointTerminalAction struct {
-	kind          checkpointTerminalActionKind
-	completion    pendingTurnCompletion
-	cancelMessage string
+	Kind         checkpointTerminalActionKind
+	Completion   pendingTurnCompletion
+	ErrorCode    string
+	ErrorMessage string
 }
 
 type pendingCheckpointPublish struct {
-	Revision       uint64
-	State          *agentv1.ConversationStateStructure
-	Required       map[string]struct{}
-	TerminalAction checkpointTerminalAction
+	State    *agentv1.ConversationStateStructure
+	Required map[string]struct{}
+	Terminal checkpointTerminalAction
 }
 
 type PendingCompaction struct {

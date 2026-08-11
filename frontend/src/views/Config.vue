@@ -2,44 +2,37 @@
 import Button from "@/components/ui/Button.vue";
 import Card from "@/components/ui/Card.vue";
 import LocaleSelect from "@/components/LocaleSelect.vue";
-import Select from "@/components/ui/Select.vue";
-import { showModal } from "@/composables/useModal";
+import { useMessage } from "@/composables/useMessage";
 import {
   appState,
   openModelConfigWindow,
   persistUserConfig,
   reloadUserConfig,
-  ROUTE_MODE_OPTIONS,
   toUserError,
 } from "@/state/appState";
 import { onMounted } from "vue";
 
-const routeModeOptions = ROUTE_MODE_OPTIONS;
+const message = useMessage();
 
-async function showActionError(title, error) {
-  await showModal({
-    title,
-    content: String(error || "服务错误").trim() || "服务错误",
-  });
+function showActionError(title, error) {
+  const detail = String(error || "服务错误").trim() || "服务错误";
+  message(`${title}：${detail}`);
 }
 
 async function handleSaveConfig() {
   const result = await persistUserConfig();
   if (!result.ok) {
-    await showActionError("保存失败", result.error);
+    showActionError("保存失败", result.error);
     return;
   }
-  await showModal({
-    title: "提示",
-    content: "本地配置已保存",
-  });
+  message("本地配置已保存");
 }
 
 async function handleOpenModelConfig() {
   try {
     await openModelConfigWindow();
   } catch (error) {
-    await showActionError("打开失败", toUserError(error));
+    showActionError("打开失败", toUserError(error));
   }
 }
 
@@ -55,30 +48,12 @@ onMounted(async () => {
         <div>
           <h2 class="text-base font-medium text-white">本地配置</h2>
           <div class="text-sm text-[#a3a3a3]">
-            可配置运行模式和模型渠道；运行日志位于 <code>~/.cursor-local-assistant-v2/logs/</code>
+            可配置模型渠道；运行日志位于 <code>~/.cursor-local-assistant-v2/logs/</code>
           </div>
         </div>
         <Button variant="primary" :disabled="appState.configSaving" @click="handleSaveConfig">
           {{ appState.configSaving ? "保存中..." : "保存配置" }}
         </Button>
-      </div>
-    </Card>
-
-    <Card>
-      <div class="flex items-center justify-between gap-4">
-        <div>
-          <h2 class="text-base font-medium text-white">运行模式</h2>
-          <div class="text-sm text-[#a3a3a3]">
-            控制白名单主链路请求走本地服务，还是回到原始 Cursor 上游地址
-          </div>
-        </div>
-        <div class="w-[220px] max-w-full">
-          <Select
-            v-model="appState.routingMode"
-            :options="routeModeOptions"
-            placeholder="选择模式"
-          />
-        </div>
       </div>
     </Card>
 

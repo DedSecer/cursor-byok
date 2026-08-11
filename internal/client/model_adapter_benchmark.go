@@ -8,8 +8,8 @@ import (
 	"fmt"
 	"hash/fnv"
 	"io"
-	"math"
 	"net/http"
+	"net/url"
 	"sort"
 	"strconv"
 	"strings"
@@ -31,7 +31,47 @@ const (
 	modelAdapterTestDefaultMaxTokens  = 65_536
 	modelAdapterTestEmptyTextError    = "未收到文本输出，无法计算测速结果"
 	modelAdapterTestMaxErrorBodyBytes = 8192
+	modelAdapterListTimeout           = 20 * time.Second
+	modelAdapterListMaxBodyBytes      = 8 << 20
+	modelAdapterListPageSize          = 1000
+	modelAdapterListMaxPages          = 50
 )
+
+// modelListProviderRule 收敛各家模型列表接口的协议差异，避免判断散落到多个函数。
+type modelListProviderRule struct {
+	// paths 按优先级排列，逐个尝试直到某个返回可用模型
+	paths       []string
+	authHeader  string
+	authPrefix  string
+	extraHeader map[string]string
+	// paginated 为真时按 limit + after_id 游标翻页，直到 has_more 为 false
+	paginated bool
+}
+
+var modelListProviderRules = map[string]modelListProviderRule{
+	"openai": {
+		paths:      []string{"/models"},
+		authHeader: "Authorization",
+		authPrefix: "Bearer ",
+	},
+	"anthropic": {
+		paths:       []string{"/models"},
+		authHeader:  "x-api-key",
+		extraHeader: map[string]string{"anthropic-version": "2023-06-01"},
+		paginated:   true,
+	},
+}
+
+// modelListVersionSegments 用于判断 base url 是否已带版本前缀，带了就不再补 /v1。
+var modelListVersionSegments = map[string]bool{
+	"v1":         true,
+	"v1beta":     true,
+	"v2":         true,
+	"beta":       true,
+	"openai":     true,
+	"compat":     true,
+	"compatible": true,
+}
 
 type ModelAdapterTestStatus string
 
@@ -56,6 +96,20 @@ type ModelAdapterTestResult struct {
 	Error            string  `json:"error"`
 	RawResponse      string  `json:"rawResponse"`
 	TestedAt         string  `json:"testedAt"`
+}
+
+// ModelAdapterModelsRequest 定义从兼容接口读取模型列表所需的最小配置。
+type ModelAdapterModelsRequest struct {
+	Type                 string `json:"type"`
+	BaseURL              string `json:"baseURL"`
+	APIKey               string `json:"apiKey"`
+	CustomHeadersEnabled bool   `json:"customHeadersEnabled"`
+	CustomHeadersJSON    string `json:"customHeadersJSON"`
+}
+
+// ModelAdapterModelsResult 定义可供前端下拉选择的模型列表。
+type ModelAdapterModelsResult struct {
+	Models []string `json:"models"`
 }
 
 // ModelAdapterTestResultsPayload 用于向前端广播当前测速结果快照。
@@ -108,6 +162,254 @@ func (s *ProxyService) GetModelAdapterTestResults() []ModelAdapterTestResult {
 	return s.snapshotModelAdapterTestResults()
 }
 
+func (s *ProxyService) FetchModelAdapterModels(input ModelAdapterModelsRequest) (ModelAdapterModelsResult, error) {
+	_ = s
+	provider := strings.ToLower(strings.TrimSpace(input.Type))
+	baseURL := strings.TrimSpace(input.BaseURL)
+	apiKey := strings.TrimSpace(input.APIKey)
+	rule, supported := modelListProviderRules[provider]
+	if !supported {
+		return ModelAdapterModelsResult{}, errors.New("模型类型仅支持 OpenAI 或 Anthropic")
+	}
+	if baseURL == "" {
+		return ModelAdapterModelsResult{}, errors.New("接口地址不能为空")
+	}
+	if apiKey == "" {
+		return ModelAdapterModelsResult{}, errors.New("访问密钥不能为空")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), modelAdapterListTimeout)
+	defer cancel()
+
+	var lastErr error
+	for _, endpoint := range buildModelListEndpointCandidates(rule, baseURL) {
+		models, err := fetchModelListEndpoint(ctx, rule, endpoint, apiKey, input)
+		if err == nil {
+			return ModelAdapterModelsResult{Models: models}, nil
+		}
+		lastErr = err
+	}
+	if lastErr != nil {
+		return ModelAdapterModelsResult{}, lastErr
+	}
+	return ModelAdapterModelsResult{}, errors.New("未找到可用的模型列表接口")
+}
+
+func buildModelListEndpointCandidates(rule modelListProviderRule, rawBaseURL string) []string {
+	base := strings.TrimRight(strings.TrimSpace(rawBaseURL), "/")
+	for _, suffix := range []string{"/chat/completions", "/responses", "/messages"} {
+		if strings.HasSuffix(strings.ToLower(base), suffix) {
+			base = base[:len(base)-len(suffix)]
+		}
+	}
+	base = strings.TrimRight(base, "/")
+
+	tail := strings.ToLower(base[strings.LastIndex(base, "/")+1:])
+	var candidates []string
+	switch {
+	case tail == "models" || tail == "model":
+		// 用户已经填到模型列表地址本身，直接用
+		candidates = []string{base}
+	case modelListVersionSegments[tail]:
+		candidates = prefixModelListPaths(base, "", rule.paths)
+	default:
+		// base 没带版本段，优先试 /v1，再退回裸路径
+		candidates = append(
+			prefixModelListPaths(base, "/v1", rule.paths),
+			prefixModelListPaths(base, "", rule.paths)...,
+		)
+	}
+
+	seen := map[string]struct{}{}
+	endpoints := make([]string, 0, len(candidates))
+	for _, endpoint := range candidates {
+		if _, err := url.ParseRequestURI(endpoint); err != nil {
+			continue
+		}
+		if _, exists := seen[endpoint]; exists {
+			continue
+		}
+		seen[endpoint] = struct{}{}
+		endpoints = append(endpoints, endpoint)
+	}
+	return endpoints
+}
+
+func prefixModelListPaths(base string, version string, paths []string) []string {
+	endpoints := make([]string, 0, len(paths))
+	for _, path := range paths {
+		endpoints = append(endpoints, base+version+path)
+	}
+	return endpoints
+}
+
+func fetchModelListEndpoint(ctx context.Context, rule modelListProviderRule, endpoint string, apiKey string, input ModelAdapterModelsRequest) ([]string, error) {
+	collected := []string{}
+	cursor := ""
+	for page := 0; page < modelAdapterListMaxPages; page++ {
+		requestURL := endpoint
+		if rule.paginated {
+			requestURL = appendModelListCursor(endpoint, cursor)
+		}
+		payload, err := requestModelListPayload(ctx, rule, requestURL, apiKey, input)
+		if err != nil {
+			return nil, err
+		}
+		collected = append(collected, extractModelIDs(payload)...)
+		if !rule.paginated {
+			break
+		}
+		cursor = nextModelListCursor(payload)
+		if cursor == "" {
+			break
+		}
+		if page == modelAdapterListMaxPages-1 {
+			return nil, fmt.Errorf("模型列表分页超过 %d 页，结果可能不完整", modelAdapterListMaxPages)
+		}
+	}
+
+	models := normalizeFetchedModelIDs(collected)
+	if len(models) == 0 {
+		return nil, errors.New("模型列表响应中没有可用模型")
+	}
+	return models, nil
+}
+
+func requestModelListPayload(
+	ctx context.Context,
+	rule modelListProviderRule,
+	requestURL string,
+	apiKey string,
+	input ModelAdapterModelsRequest,
+) (any, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, requestURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set(rule.authHeader, rule.authPrefix+apiKey)
+	for key, value := range rule.extraHeader {
+		req.Header.Set(key, value)
+	}
+	req.Header.Set("Accept", "application/json")
+	applyModelListCustomHeaders(req.Header, input)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	body, readErr := io.ReadAll(io.LimitReader(resp.Body, modelAdapterListMaxBodyBytes))
+	if readErr != nil {
+		return nil, readErr
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		message := strings.TrimSpace(string(body))
+		if len(message) > modelAdapterTestMaxErrorBodyBytes {
+			message = message[:modelAdapterTestMaxErrorBodyBytes]
+		}
+		if message == "" {
+			message = resp.Status
+		}
+		return nil, fmt.Errorf("读取模型列表失败：%s", message)
+	}
+
+	var payload any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return nil, fmt.Errorf("模型列表响应不是合法 JSON：%w", err)
+	}
+	return payload, nil
+}
+
+func appendModelListCursor(endpoint string, cursor string) string {
+	query := url.Values{}
+	query.Set("limit", strconv.Itoa(modelAdapterListPageSize))
+	if cursor != "" {
+		query.Set("after_id", cursor)
+	}
+	separator := "?"
+	if strings.Contains(endpoint, "?") {
+		separator = "&"
+	}
+	return endpoint + separator + query.Encode()
+}
+
+func nextModelListCursor(payload any) string {
+	object, ok := payload.(map[string]any)
+	if !ok {
+		return ""
+	}
+	if hasMore, _ := object["has_more"].(bool); !hasMore {
+		return ""
+	}
+	cursor, _ := object["last_id"].(string)
+	return strings.TrimSpace(cursor)
+}
+
+func applyModelListCustomHeaders(header http.Header, input ModelAdapterModelsRequest) {
+	if !input.CustomHeadersEnabled || strings.TrimSpace(input.CustomHeadersJSON) == "" {
+		return
+	}
+	var parsed map[string]string
+	if err := json.Unmarshal([]byte(input.CustomHeadersJSON), &parsed); err != nil {
+		return
+	}
+	for key, value := range parsed {
+		if strings.TrimSpace(key) == "" {
+			continue
+		}
+		header.Set(key, value)
+	}
+}
+
+func extractModelIDs(value any) []string {
+	switch typed := value.(type) {
+	case string:
+		if strings.TrimSpace(typed) == "" {
+			return []string{}
+		}
+		return []string{typed}
+	case []any:
+		models := make([]string, 0, len(typed))
+		for _, item := range typed {
+			models = append(models, extractModelIDs(item)...)
+		}
+		return models
+	case map[string]any:
+		for _, key := range []string{"id", "name"} {
+			if text, ok := typed[key].(string); ok && strings.TrimSpace(text) != "" {
+				return []string{text}
+			}
+		}
+		models := []string{}
+		for _, key := range []string{"data", "models"} {
+			if child, ok := typed[key]; ok {
+				models = append(models, extractModelIDs(child)...)
+			}
+		}
+		return models
+	default:
+		return []string{}
+	}
+}
+
+func normalizeFetchedModelIDs(input []string) []string {
+	seen := map[string]struct{}{}
+	models := make([]string, 0, len(input))
+	for _, item := range input {
+		model := strings.TrimSpace(item)
+		if model == "" {
+			continue
+		}
+		if _, exists := seen[model]; exists {
+			continue
+		}
+		seen[model] = struct{}{}
+		models = append(models, model)
+	}
+	sort.Strings(models)
+	return models
+}
+
 func (s *ProxyService) TestModelAdapter(adapter serverconfig.ModelAdapterConfig) (ModelAdapterTestResult, error) {
 	requestHash := buildModelAdapterTestRequestHash(adapter)
 	adapterID := buildModelAdapterTestCacheKey(adapter, requestHash)
@@ -135,7 +437,6 @@ func (s *ProxyService) TestModelAdapter(adapter serverconfig.ModelAdapterConfig)
 		AdapterID:   normalized.ID,
 		RequestHash: requestHash,
 		Status:      string(ModelAdapterTestStatusRunning),
-		SummaryText: "测试中...",
 		TestedAt:    time.Now().UTC().Format(time.RFC3339Nano),
 	}
 	s.storeAndEmitModelAdapterTestResult(running)
@@ -213,7 +514,6 @@ func (s *ProxyService) runModelAdapterTest(adapter serverconfig.ModelAdapterConf
 		TestedAt:         time.Now().UTC().Format(time.RFC3339Nano),
 		RawResponse:      strings.TrimSpace(metrics.rawResponse),
 	}
-	result.SummaryText = buildModelAdapterTestSummaryText(result)
 	return result, nil
 }
 
@@ -444,13 +744,6 @@ func buildErroredModelAdapterTestResult(adapterID string, requestHash string, er
 	}
 }
 
-func buildModelAdapterTestSummaryText(result ModelAdapterTestResult) string {
-	if strings.TrimSpace(result.Status) != string(ModelAdapterTestStatusSuccess) {
-		return firstNonEmptyTrimmed(result.SummaryText, "测试失败")
-	}
-	return fmt.Sprintf("%d t/s | 首字 %s", int(math.Round(maxFloat64(result.TokensPerSecond, 0))), formatModelAdapterTestDuration(result.FirstTextTokenMS))
-}
-
 func buildModelAdapterHTTPStatusError(prefix string, resp *http.Response) error {
 	if resp == nil {
 		return fmt.Errorf("%s response is nil", strings.TrimSpace(prefix))
@@ -544,17 +837,6 @@ func buildModelAdapterTestErrorSummary(err error) string {
 	default:
 		return "测试失败"
 	}
-}
-
-func formatModelAdapterTestDuration(durationMS int64) string {
-	if durationMS < 1000 {
-		if durationMS < 0 {
-			durationMS = 0
-		}
-		return fmt.Sprintf("%d ms", durationMS)
-	}
-	seconds := float64(durationMS) / 1000
-	return fmt.Sprintf("%.1f s", seconds)
 }
 
 func estimateBenchmarkTextTokens(text string) int64 {
@@ -749,13 +1031,6 @@ func normalizeModelAdapterTestAnthropicExtraParamsJSON(adapter serverconfig.Mode
 func normalizeModelAdapterTestInt(value int) int {
 	if value <= 0 {
 		return 0
-	}
-	return value
-}
-
-func maxFloat64(value float64, fallback float64) float64 {
-	if value < fallback {
-		return fallback
 	}
 	return value
 }

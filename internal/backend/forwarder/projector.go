@@ -9,7 +9,6 @@ import (
 
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
-	"google.golang.org/protobuf/reflect/protoreflect"
 
 	"cursor/gen/agentv1"
 	modeladapter "cursor/internal/backend/agent/model"
@@ -327,20 +326,24 @@ func compactedPromptProjectionEntries(entries []HistoryEntry) []HistoryEntry {
 		latestToolCallID := latestCompletedToolCallIDForTurn(entries, compactionPayload.CurrentTurnSeq, compactionPayload.CurrentRequestID)
 		preservedIndexes = autoCompactionPreservedEntryIndexes(entries, compactionPayload.CurrentTurnSeq, compactionPayload.CurrentRequestID, latestToolCallID)
 	}
-	filtered := make([]HistoryEntry, 0, len(entries)-compactionIndex)
-	for index, entry := range entries {
-		if index < compactionIndex && isPromptReplayEntryKind(entry.Kind) {
-			if _, ok := preservedIndexes[index]; !ok {
-				continue
-			}
+	filtered := make([]HistoryEntry, 0, len(entries)-compactionIndex+len(preservedIndexes))
+	for index := 0; index < compactionIndex; index++ {
+		if !isPromptReplayEntryKind(entries[index].Kind) {
+			filtered = append(filtered, entries[index])
 		}
-		if index < compactionIndex {
-			if rewritten, ok := compactedProjectionPreservedEntry(entry); ok {
-				entry = rewritten
-			}
+	}
+	filtered = append(filtered, entries[compactionIndex])
+	for index := 0; index < compactionIndex; index++ {
+		if _, ok := preservedIndexes[index]; !ok || isCompactionSummaryKind(entries[index].Kind) {
+			continue
+		}
+		entry := entries[index]
+		if rewritten, ok := compactedProjectionPreservedEntry(entry); ok {
+			entry = rewritten
 		}
 		filtered = append(filtered, entry)
 	}
+	filtered = append(filtered, entries[compactionIndex+1:]...)
 	return filtered
 }
 
@@ -356,6 +359,7 @@ const (
 	cancelReplayPolicyDropTurn        = "drop_turn"
 	cancelReplayPolicyDropUnstarted   = "drop_unstarted_turn"
 	cancelReplayPolicyKeepStableInput = "keep_stable_input"
+	cancelReplayPolicyKeepInterrupted = "keep_interrupted_output"
 )
 
 func sanitizeCanceledReplayEntries(entries []HistoryEntry) []HistoryEntry {
@@ -371,12 +375,18 @@ func sanitizeCanceledReplayEntries(entries []HistoryEntry) []HistoryEntry {
 	for _, entry := range entries {
 		if entry.TurnSeq > 0 {
 			if policy, canceled := canceledTurns[entry.TurnSeq]; canceled {
-				if policy == cancelReplayPolicyDropUnstarted {
+				if policy == cancelReplayPolicyKeepInterrupted {
+					filtered = append(filtered, entry)
+					continue
+				}
+				if policy != cancelReplayPolicyDropTurn {
 					if _, active := activeCanceledTurns[entry.TurnSeq]; active {
-						policy = cancelReplayPolicyKeepStableInput
-					} else {
-						policy = cancelReplayPolicyDropTurn
+						filtered = append(filtered, entry)
+						continue
 					}
+				}
+				if policy == cancelReplayPolicyDropUnstarted {
+					policy = cancelReplayPolicyDropTurn
 				}
 				if policy == cancelReplayPolicyDropTurn || !isStableCanceledTurnInputEntry(entry) {
 					continue
@@ -451,6 +461,8 @@ func normalizeCancelReplayPolicy(policy string, reason string) string {
 		return cancelReplayPolicyDropUnstarted
 	case cancelReplayPolicyKeepStableInput:
 		return cancelReplayPolicyKeepStableInput
+	case cancelReplayPolicyKeepInterrupted:
+		return cancelReplayPolicyKeepInterrupted
 	default:
 		return cancelReplayPolicyForReason(reason)
 	}
@@ -567,22 +579,7 @@ func (projector *HistoryProjector) ProjectCheckpointProjection(conversation *Con
 	if err != nil {
 		return nil, err
 	}
-	importedIDs, importedBlobs, err := reachableImportedBlobs(conversation.ImportedTurnIDs, conversation.ImportedBlobs)
-	if err != nil {
-		return nil, err
-	}
-	if len(importedIDs) > 0 {
-		importedIDs, err = projectImportedTurnBlobs(importedIDs, importedBlobs, blobs)
-		if err != nil {
-			return nil, err
-		}
-	} else if len(conversation.ImportedTurnIDs) > 0 {
-		importedIDs, err = projectImportedFallbackTurns(conversation, blobs)
-		if err != nil {
-			return nil, err
-		}
-	}
-	state.Turns = append(importedIDs, turnIDs...)
+	state.Turns = append(cloneByteSlices(conversation.ImportedTurnIDs), turnIDs...)
 	replayMessages, err := projector.ProjectPromptReplay(conversation)
 	if err != nil {
 		return nil, err
@@ -613,138 +610,6 @@ func (projector *HistoryProjector) ProjectCheckpointProjection(conversation *Con
 	return &CheckpointProjection{State: state, Blobs: blobs.list()}, nil
 }
 
-func projectImportedTurnBlobs(turnIDs [][]byte, source importedBlobStore, blobs *checkpointBlobGraph) ([][]byte, error) {
-	projected := make([][]byte, 0, len(turnIDs))
-	for _, turnID := range turnIDs {
-		turnData, ok := source.resolve(turnID)
-		if !ok {
-			continue
-		}
-		turn := &agentv1.ConversationTurnStructure{}
-		if err := proto.Unmarshal(turnData, turn); err != nil {
-			return nil, err
-		}
-		agentTurn := turn.GetAgentConversationTurn()
-		if agentTurn == nil {
-			projected = append(projected, blobs.add(turnData))
-			continue
-		}
-		var userID []byte
-		if data, ok := source.resolve(agentTurn.GetUserMessage()); ok {
-			userID = blobs.add(data)
-		}
-		stepIDs := make([][]byte, 0, len(agentTurn.GetSteps()))
-		for _, stepID := range agentTurn.GetSteps() {
-			data, ok := source.resolve(stepID)
-			if !ok {
-				continue
-			}
-			step := &agentv1.ConversationStep{}
-			if err := proto.Unmarshal(data, step); err != nil {
-				return nil, err
-			}
-			switch message := step.GetMessage().(type) {
-			case *agentv1.ConversationStep_AssistantMessage:
-				if strings.TrimSpace(message.AssistantMessage.GetText()) != "" {
-					stepIDs = append(stepIDs, blobs.add(data))
-				}
-			case *agentv1.ConversationStep_ToolCall:
-				if toolCallHasStructuredResult(message.ToolCall) {
-					stepIDs = append(stepIDs, blobs.add(data))
-				}
-			}
-		}
-		if len(userID) == 0 && len(stepIDs) == 0 {
-			continue
-		}
-		cloned := proto.Clone(turn).(*agentv1.ConversationTurnStructure)
-		clonedAgentTurn := cloned.GetAgentConversationTurn()
-		clonedAgentTurn.UserMessage = userID
-		clonedAgentTurn.Steps = stepIDs
-		data, err := proto.Marshal(cloned)
-		if err != nil {
-			return nil, err
-		}
-		projected = append(projected, blobs.add(data))
-	}
-	return projected, nil
-}
-
-func projectImportedFallbackTurns(conversation *ConversationFile, blobs *checkpointBlobGraph) ([][]byte, error) {
-	if conversation == nil || blobs == nil {
-		return nil, nil
-	}
-	messages := make([]modeladapter.Message, 0)
-	for _, entry := range conversation.Entries {
-		if entry.TurnSeq != 0 || strings.TrimSpace(entry.Kind) != "model_message" {
-			continue
-		}
-		var payload modelMessageEntryPayload
-		if err := json.Unmarshal(entry.Payload, &payload); err != nil {
-			return nil, err
-		}
-		messages = append(messages, payload.Message)
-	}
-	turnIDs := make([][]byte, 0)
-	var userText string
-	assistantTexts := make([]string, 0)
-	emit := func() error {
-		if strings.TrimSpace(userText) == "" {
-			return nil
-		}
-		userData, err := proto.Marshal(&agentv1.UserMessage{Text: strings.TrimSpace(userText)})
-		if err != nil {
-			return err
-		}
-		stepIDs := make([][]byte, 0, len(assistantTexts))
-		for _, text := range assistantTexts {
-			if strings.TrimSpace(text) == "" {
-				continue
-			}
-			stepID, err := addCheckpointStepBlob(blobs, &agentv1.ConversationStep{
-				Message: &agentv1.ConversationStep_AssistantMessage{
-					AssistantMessage: &agentv1.AssistantMessage{Text: strings.TrimSpace(text)},
-				},
-			})
-			if err != nil {
-				return err
-			}
-			stepIDs = append(stepIDs, stepID)
-		}
-		turnData, err := proto.Marshal(&agentv1.ConversationTurnStructure{
-			Turn: &agentv1.ConversationTurnStructure_AgentConversationTurn{
-				AgentConversationTurn: &agentv1.AgentConversationTurnStructure{
-					UserMessage: blobs.add(userData),
-					Steps:       stepIDs,
-				},
-			},
-		})
-		if err != nil {
-			return err
-		}
-		turnIDs = append(turnIDs, blobs.add(turnData))
-		return nil
-	}
-	for _, message := range messages {
-		switch strings.TrimSpace(message.Role) {
-		case "user":
-			if err := emit(); err != nil {
-				return nil, err
-			}
-			userText = message.Content
-			assistantTexts = assistantTexts[:0]
-		case "assistant":
-			if strings.TrimSpace(userText) != "" && strings.TrimSpace(message.Content) != "" {
-				assistantTexts = append(assistantTexts, message.Content)
-			}
-		}
-	}
-	if err := emit(); err != nil {
-		return nil, err
-	}
-	return turnIDs, nil
-}
-
 func projectCheckpointTurnBlobs(conversation *ConversationFile, blobs *checkpointBlobGraph) ([][]byte, error) {
 	if conversation == nil || blobs == nil {
 		return nil, nil
@@ -760,14 +625,31 @@ func projectCheckpointTurnBlobs(conversation *ConversationFile, blobs *checkpoin
 		}
 		grouped[entry.TurnSeq] = append(grouped[entry.TurnSeq], entry)
 	}
-
-	turnIDs := make([][]byte, 0, len(order))
+	logicalTurns := make([][]HistoryEntry, 0, len(order))
 	for _, turnSeq := range order {
 		entries := grouped[turnSeq]
+		if checkpointTurnHasUserMessage(entries) {
+			logicalTurns = append(logicalTurns, append([]HistoryEntry(nil), entries...))
+			continue
+		}
+		if len(logicalTurns) == 0 {
+			continue
+		}
+		last := len(logicalTurns) - 1
+		logicalTurns[last] = append(logicalTurns[last], entries...)
+	}
+
+	turnIDs := make([][]byte, 0, len(logicalTurns))
+	for _, entries := range logicalTurns {
+		completedToolCalls, err := collectCheckpointCompletedToolCalls(entries)
+		if err != nil {
+			return nil, err
+		}
 		var userMessageID []byte
 		var turnRequestID string
-		stepIDs := make([][]byte, 0, len(entries))
-		completedToolCalls := make(map[string]int)
+		steps := make([]*agentv1.ConversationStep, 0, len(entries))
+		seenToolCalls := make(map[string]struct{})
+		openToolCalls := make(map[string]struct{})
 		for _, entry := range entries {
 			if turnRequestID == "" {
 				turnRequestID = strings.TrimSpace(entry.RequestID)
@@ -788,33 +670,73 @@ func projectCheckpointTurnBlobs(conversation *ConversationFile, blobs *checkpoin
 				if err := json.Unmarshal(entry.Payload, &payload); err != nil {
 					return nil, err
 				}
+				if strings.TrimSpace(payload.Text) == "" && strings.TrimSpace(payload.ReasoningContent) != "" && len(openToolCalls) > 0 {
+					continue
+				}
+				if strings.TrimSpace(payload.ReasoningContent) != "" {
+					steps = append(steps, &agentv1.ConversationStep{
+						Message: &agentv1.ConversationStep_ThinkingMessage{
+							ThinkingMessage: &agentv1.ThinkingMessage{Text: payload.ReasoningContent},
+						},
+					})
+				}
 				if strings.TrimSpace(payload.Text) == "" {
 					continue
 				}
-				stepID, err := addCheckpointStepBlob(blobs, &agentv1.ConversationStep{
+				steps = append(steps, &agentv1.ConversationStep{
 					Message: &agentv1.ConversationStep_AssistantMessage{
 						AssistantMessage: &agentv1.AssistantMessage{Text: strings.TrimSpace(payload.Text)},
 					},
 				})
-				if err != nil {
-					return nil, err
-				}
-				stepIDs = append(stepIDs, stepID)
 			case "tool_call":
 				var payload toolCallEntryPayload
 				if err := json.Unmarshal(entry.Payload, &payload); err != nil {
 					return nil, err
 				}
-				if toolCallID := strings.TrimSpace(payload.ToolCallID); toolCallID == "" {
-					continue
+				if strings.TrimSpace(payload.ReasoningContent) != "" {
+					steps = append(steps, &agentv1.ConversationStep{
+						Message: &agentv1.ConversationStep_ThinkingMessage{
+							ThinkingMessage: &agentv1.ThinkingMessage{Text: payload.ReasoningContent},
+						},
+					})
+				}
+				toolCall := &agentv1.ToolCall{}
+				toolCallID := strings.TrimSpace(payload.ToolCallID)
+				if err := protojson.Unmarshal(payload.ToolCall, toolCall); err != nil {
+					return nil, err
+				}
+				if completedPayload := completedToolCalls[toolCallID]; len(completedPayload) > 0 {
+					completedToolCall := &agentv1.ToolCall{}
+					if err := protojson.Unmarshal(completedPayload, completedToolCall); err != nil {
+						return nil, err
+					}
+					proto.Merge(toolCall, completedToolCall)
+				}
+				steps = append(steps, &agentv1.ConversationStep{
+					Message: &agentv1.ConversationStep_ToolCall{ToolCall: toolCall},
+				})
+				if toolCallID != "" {
+					seenToolCalls[toolCallID] = struct{}{}
+					openToolCalls[toolCallID] = struct{}{}
 				}
 			case "tool_result":
 				var payload toolResultEntryPayload
 				if err := json.Unmarshal(entry.Payload, &payload); err != nil {
 					return nil, err
 				}
-				if strings.TrimSpace(payload.ToolCallID) == "" {
+				toolCallID := strings.TrimSpace(payload.ToolCallID)
+				if toolCallID != "" {
+					delete(openToolCalls, toolCallID)
+				}
+				if _, ok := seenToolCalls[toolCallID]; ok {
 					continue
+				}
+				if strings.TrimSpace(payload.ReasoningContent) != "" {
+					steps = append(steps, &agentv1.ConversationStep{
+						Message: &agentv1.ConversationStep_ThinkingMessage{
+							ThinkingMessage: &agentv1.ThinkingMessage{Text: payload.ReasoningContent},
+						},
+					})
 				}
 				if len(payload.ToolCall) == 0 {
 					continue
@@ -823,26 +745,21 @@ func projectCheckpointTurnBlobs(conversation *ConversationFile, blobs *checkpoin
 				if err := protojson.Unmarshal(payload.ToolCall, toolCall); err != nil {
 					return nil, err
 				}
-				if !shouldPersistToolResultName(firstNonEmpty(strings.TrimSpace(payload.ToolName), inferToolName(toolCall))) || !toolCallHasStructuredResult(toolCall) {
-					continue
-				}
-				stepID, err := addCheckpointStepBlob(blobs, &agentv1.ConversationStep{
+				steps = append(steps, &agentv1.ConversationStep{
 					Message: &agentv1.ConversationStep_ToolCall{ToolCall: toolCall},
 				})
-				if err != nil {
-					return nil, err
-				}
-				toolCallID := strings.TrimSpace(payload.ToolCallID)
-				if index, exists := completedToolCalls[toolCallID]; exists {
-					stepIDs[index] = stepID
-					continue
-				}
-				completedToolCalls[toolCallID] = len(stepIDs)
-				stepIDs = append(stepIDs, stepID)
 			}
 		}
-		if len(userMessageID) == 0 && len(stepIDs) == 0 {
+		if len(userMessageID) == 0 {
 			continue
+		}
+		stepIDs := make([][]byte, 0, len(steps))
+		for _, step := range steps {
+			stepID, err := addCheckpointStepBlob(blobs, step)
+			if err != nil {
+				return nil, err
+			}
+			stepIDs = append(stepIDs, stepID)
 		}
 		agentTurn := &agentv1.AgentConversationTurnStructure{
 			UserMessage: userMessageID,
@@ -864,24 +781,30 @@ func projectCheckpointTurnBlobs(conversation *ConversationFile, blobs *checkpoin
 	return turnIDs, nil
 }
 
-func toolCallHasStructuredResult(toolCall *agentv1.ToolCall) bool {
-	if toolCall == nil {
-		return false
-	}
-	message := toolCall.ProtoReflect()
-	oneofs := message.Descriptor().Oneofs()
-	for index := 0; index < oneofs.Len(); index++ {
-		field := message.WhichOneof(oneofs.Get(index))
-		if field == nil || field.Kind() != protoreflect.MessageKind {
-			continue
-		}
-		tool := message.Get(field).Message()
-		result := tool.Descriptor().Fields().ByName("result")
-		if result != nil && tool.Has(result) {
+func checkpointTurnHasUserMessage(entries []HistoryEntry) bool {
+	for _, entry := range entries {
+		if strings.TrimSpace(entry.Kind) == "user_message" {
 			return true
 		}
 	}
 	return false
+}
+
+func collectCheckpointCompletedToolCalls(entries []HistoryEntry) (map[string]json.RawMessage, error) {
+	completed := make(map[string]json.RawMessage)
+	for _, entry := range entries {
+		if strings.TrimSpace(entry.Kind) != "tool_result" {
+			continue
+		}
+		var payload toolResultEntryPayload
+		if err := json.Unmarshal(entry.Payload, &payload); err != nil {
+			return nil, err
+		}
+		if toolCallID := strings.TrimSpace(payload.ToolCallID); toolCallID != "" && len(payload.ToolCall) > 0 {
+			completed[toolCallID] = payload.ToolCall
+		}
+	}
+	return completed, nil
 }
 
 func addCheckpointStepBlob(blobs *checkpointBlobGraph, step *agentv1.ConversationStep) ([]byte, error) {
@@ -1328,7 +1251,7 @@ func trimReplayDanglingAssistantToolCalls(messages []modeladapter.Message) []mod
 	return trimmed
 }
 
-func shouldPersistToolResultName(toolName string) bool {
+func shouldPersistCheckpointReplayToolResultName(toolName string) bool {
 	switch strings.TrimSpace(toolName) {
 	case "PatchEdit", "PatchEditLines", "PatchEditSpan", "Edit", "Write", "GenerateImage":
 		return true
@@ -1347,7 +1270,7 @@ func filterCheckpointPersistentToolReplay(messages []promptengine.Message) []pro
 		if strings.TrimSpace(message.Role) == "assistant" && len(message.ToolCalls) > 0 {
 			nextToolCalls := make([]promptengine.ToolCallDescriptor, 0, len(message.ToolCalls))
 			for _, toolCall := range message.ToolCalls {
-				if !shouldPersistToolResultName(toolCall.Function.Name) {
+				if !shouldPersistCheckpointReplayToolResultName(toolCall.Function.Name) {
 					skippedToolCallIDs[strings.TrimSpace(toolCall.ID)] = struct{}{}
 					continue
 				}
@@ -1364,7 +1287,7 @@ func filterCheckpointPersistentToolReplay(messages []promptengine.Message) []pro
 			if _, ok := skippedToolCallIDs[strings.TrimSpace(message.ToolCallID)]; ok {
 				continue
 			}
-			if !shouldPersistToolResultName(message.Name) {
+			if !shouldPersistCheckpointReplayToolResultName(message.Name) {
 				continue
 			}
 		}

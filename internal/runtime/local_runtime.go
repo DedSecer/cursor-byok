@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -36,6 +37,8 @@ const (
 // ModelAdapterConfig 定义了当前模块中的 ModelAdapterConfig 类型。
 type ModelAdapterConfig struct {
 	ID string `json:"id,omitempty"`
+	// Sort 表示模型渠道的展示顺序。
+	Sort int `json:"sort"`
 	// SourceProviderID 是 CC Switch 中稳定的 Provider 主键。
 	SourceProviderID string `json:"sourceProviderId,omitempty"`
 	// SourceProviderName 保存请求发生时使用的 Provider 展示名。
@@ -109,6 +112,7 @@ func NormalizeModelAdapterConfigs(input []ModelAdapterConfig) ([]ModelAdapterCon
 			return nil, err
 		}
 		next := ModelAdapterConfig{
+			Sort:                 item.Sort,
 			SourceProviderID:     strings.TrimSpace(item.SourceProviderID),
 			SourceProviderName:   strings.TrimSpace(item.SourceProviderName),
 			DisplayName:          strings.TrimSpace(item.DisplayName),
@@ -178,7 +182,28 @@ func NormalizeModelAdapterConfigs(input []ModelAdapterConfig) ([]ModelAdapterCon
 		seenChannelIDs[next.ID] = struct{}{}
 		normalized = append(normalized, next)
 	}
+	normalizeModelAdapterSorts(normalized)
 	return normalized, nil
+}
+
+func normalizeModelAdapterSorts(adapters []ModelAdapterConfig) {
+	sort.SliceStable(adapters, func(leftIndex, rightIndex int) bool {
+		left := adapters[leftIndex].Sort
+		right := adapters[rightIndex].Sort
+		switch {
+		case left <= 0 && right <= 0:
+			return false
+		case left <= 0:
+			return false
+		case right <= 0:
+			return true
+		default:
+			return left < right
+		}
+	})
+	for index := range adapters {
+		adapters[index].Sort = index + 1
+	}
 }
 
 func validateJSONMap(value string, fieldName string) error {

@@ -12,11 +12,11 @@ import {
   loadUserConfig,
   openLogsDirectory,
   openModelConfig,
-  openModelEditor,
   saveUserConfig,
   startProxyService,
   stopProxyService,
   testModelAdapter,
+  fetchModelAdapterModels,
 } from "@/services/clientApi";
 
 const APP_STATE_STORAGE_KEY = "cursor-client:runtime-state:v2";
@@ -36,7 +36,6 @@ export const EXTRA_PARAMS_DEFAULT_JSON = `{
 export const CUSTOM_HEADERS_DEFAULT_JSON = `{
 }`;
 const SUPPORTED_OPENAI_ENDPOINTS = new Set([OPENAI_ENDPOINT_RESPONSES, OPENAI_ENDPOINT_CHAT_COMPLETIONS, OPENAI_ENDPOINT_CUSTOM]);
-const SUPPORTED_ROUTE_MODES = new Set(["local", "upstream"]);
 const PROXY_STATE_EVENT = "proxy:state";
 const USER_CONFIG_CHANGED_EVENT = "user-config:changed";
 const UPDATE_STATE_EVENT = "update:state";
@@ -46,11 +45,6 @@ const UPDATE_ERROR_EVENT = "update:error";
 const MODEL_ADAPTER_TEST_UPDATED_EVENT = "model-adapter-test:updated";
 const SUPPORTED_MODEL_ADAPTER_TEST_STATUSES = new Set(["idle", "running", "success", "error"]);
 const HOME_METRICS_MIN_LOADING_MS = 600;
-
-export const ROUTE_MODE_OPTIONS = [
-  { label: "本地服务模式", value: "local" },
-  { label: "直连 Cursor 模式", value: "upstream" },
-];
 
 function asString(value) {
   if (typeof value === "string") {
@@ -124,14 +118,6 @@ function formatReleaseDate(value) {
     return text;
   }
   return parsed.format("YYYY-MM-DD HH:mm");
-}
-
-function normalizeRouteMode(value, fallback = "local") {
-  const text = asString(value).toLowerCase();
-  if (SUPPORTED_ROUTE_MODES.has(text)) {
-    return text;
-  }
-  return fallback;
 }
 
 function normalizeBaseURL(value) {
@@ -240,7 +226,7 @@ function normalizeModelAdapterTestResult(source) {
     rawResponse: asString(raw.rawResponse),
     testedAt: asString(raw.testedAt),
   };
-  if (!normalized.summaryText) {
+  if (status === "running" || status === "success") {
     normalized.summaryText = formatModelAdapterTestSummary(normalized);
   }
   if (status === "error" && !normalized.summaryText) {
@@ -261,6 +247,7 @@ function normalizeModelAdapterTestResults(source) {
 export function createEmptyModelAdapter() {
   return {
     id: "",
+    sort: 0,
     displayName: "",
     type: "openai",
     baseURL: "",
@@ -368,6 +355,7 @@ export function normalizeModelAdapter(source) {
     : "";
   return {
     id: asString(raw.id),
+    sort: asPositiveInteger(raw.sort),
     displayName: asString(raw.displayName || raw.name),
     type: SUPPORTED_MODEL_ADAPTER_TYPES.has(normalizedType) ? normalizedType : "",
     baseURL: normalizeBaseURL(raw.baseURL || raw.url),
@@ -405,7 +393,29 @@ export function normalizeModelAdapter(source) {
 }
 
 export function normalizeModelAdapters(source) {
-  return asArray(source).map((item) => normalizeModelAdapter(item));
+  return asArray(source)
+    .map((item, sourceIndex) => ({
+      adapter: normalizeModelAdapter(item),
+      sourceIndex,
+    }))
+    .sort((left, right) => {
+      const leftSort = left.adapter.sort;
+      const rightSort = right.adapter.sort;
+      if (leftSort <= 0 && rightSort <= 0) {
+        return left.sourceIndex - right.sourceIndex;
+      }
+      if (leftSort <= 0) {
+        return 1;
+      }
+      if (rightSort <= 0) {
+        return -1;
+      }
+      return leftSort - rightSort || left.sourceIndex - right.sourceIndex;
+    })
+    .map(({ adapter }, index) => ({
+      ...adapter,
+      sort: index + 1,
+    }));
 }
 
 export function validateModelAdapters(source) {
@@ -413,9 +423,6 @@ export function validateModelAdapters(source) {
   const seenIdentityKeys = new Set();
   for (const [index, adapter] of adapters.entries()) {
     const prefix = `模型 ${index + 1}`;
-    if (!adapter.displayName) {
-      return `${prefix} 的显示名称不能为空`;
-    }
     if (!SUPPORTED_MODEL_ADAPTER_TYPES.has(adapter.type)) {
       return `${prefix} 的类型仅支持 OpenAI 或 Anthropic`;
     }
@@ -425,14 +432,26 @@ export function validateModelAdapters(source) {
     if (!adapter.apiKey) {
       return `${prefix} 的访问密钥不能为空`;
     }
-    if (!adapter.tooltipData) {
-      return `${prefix} 的悬停提示不能为空`;
+    if (!adapter.displayName) {
+      return `${prefix} 的显示名称不能为空`;
     }
     if (!adapter.modelID) {
       return `${prefix} 的模型标识不能为空`;
     }
+    if (adapter.contextWindowTokens && (!Number.isInteger(adapter.contextWindowTokens) || adapter.contextWindowTokens <= 0)) {
+      return `${prefix} 的上下文窗口必须为正整数`;
+    }
     if (adapter.type === "openai" && !SUPPORTED_REASONING_EFFORTS.has(adapter.reasoningEffort)) {
       return `${prefix} 的推理强度仅支持 low、medium、high、xhigh、max`;
+    }
+    if (adapter.type === "anthropic" && adapter.anthropicMaxTokens && (!Number.isInteger(adapter.anthropicMaxTokens) || adapter.anthropicMaxTokens <= 0)) {
+      return `${prefix} 的最大输出 Token 必须为正整数`;
+    }
+    if (adapter.type === "anthropic" && !SUPPORTED_ANTHROPIC_THINKING_EFFORTS.has(adapter.anthropicThinkingEffort)) {
+      return `${prefix} 的 Anthropic 思考强度仅支持 low、medium、high、xhigh、max`;
+    }
+    if (adapter.type === "openai" && adapter.maxCompletionTokens && (!Number.isInteger(adapter.maxCompletionTokens) || adapter.maxCompletionTokens <= 0)) {
+      return `${prefix} 的最大输出 Token 必须为正整数`;
     }
     if (adapter.type === "openai" && !isValidOpenAIEndpoint(adapter.openAIEndpoint)) {
       return `${prefix} 的 OpenAI 端点仅支持 /v1/responses、/v1/chat/completions 或以 / 开头的自定义路径`;
@@ -443,29 +462,20 @@ export function validateModelAdapters(source) {
         return `${prefix} 的 ${extraParamsError}`;
       }
     }
-    if (adapter.customHeadersEnabled) {
-      const customHeadersError = validateHeadersJSON(adapter.customHeadersJSON);
-      if (customHeadersError) {
-        return `${prefix} 的 ${customHeadersError}`;
-      }
-    }
     if (adapter.type === "anthropic" && adapter.anthropicExtraParamsEnabled) {
       const extraParamsError = validateAnthropicExtraParamsJSON(adapter.anthropicExtraParamsJSON);
       if (extraParamsError) {
         return `${prefix} 的 ${extraParamsError}`;
       }
     }
-    if (adapter.type === "anthropic" && !SUPPORTED_ANTHROPIC_THINKING_EFFORTS.has(adapter.anthropicThinkingEffort)) {
-      return `${prefix} 的 Anthropic 思考强度仅支持 low、medium、high、xhigh、max`;
+    if (adapter.customHeadersEnabled) {
+      const customHeadersError = validateHeadersJSON(adapter.customHeadersJSON);
+      if (customHeadersError) {
+        return `${prefix} 的 ${customHeadersError}`;
+      }
     }
-    if (adapter.contextWindowTokens && (!Number.isInteger(adapter.contextWindowTokens) || adapter.contextWindowTokens <= 0)) {
-      return `${prefix} 的上下文窗口必须为正整数`;
-    }
-    if (adapter.maxCompletionTokens && (!Number.isInteger(adapter.maxCompletionTokens) || adapter.maxCompletionTokens <= 0)) {
-      return `${prefix} 的最大输出 Token 必须为正整数`;
-    }
-    if (adapter.anthropicMaxTokens && (!Number.isInteger(adapter.anthropicMaxTokens) || adapter.anthropicMaxTokens <= 0)) {
-      return `${prefix} 的最大输出 Token 必须为正整数`;
+    if (!adapter.tooltipData) {
+      return `${prefix} 的悬停提示不能为空`;
     }
     if (adapter.thinkingBudgetTokens && (!Number.isInteger(adapter.thinkingBudgetTokens) || adapter.thinkingBudgetTokens <= 0)) {
       return `${prefix} 的思考预算 Token 必须为正整数`;
@@ -475,13 +485,6 @@ export function validateModelAdapters(source) {
       return `模型渠道重复，请检查 url、modelID、apiKey、displayName、endpoint 组合`;
     }
     seenIdentityKeys.add(dedupeKey);
-  }
-  return "";
-}
-
-function validateConfigPayload(payload) {
-  if (!SUPPORTED_ROUTE_MODES.has(normalizeRouteMode(payload?.routing?.mode, ""))) {
-    return "运行模式仅支持 local 或 upstream";
   }
   return "";
 }
@@ -536,7 +539,6 @@ function loadCachedState() {
 
 function normalizeConfig(source) {
   const raw = source && typeof source === "object" ? source : {};
-  const routing = raw.routing && typeof raw.routing === "object" ? raw.routing : {};
   const homeMetrics = raw.homeMetrics && typeof raw.homeMetrics === "object" ? raw.homeMetrics : {};
   return {
     log: asBoolean(raw.log),
@@ -544,9 +546,6 @@ function normalizeConfig(source) {
     backendListenAddr: asString(raw.configBackendListenAddr) || asString(raw.backendListenAddr),
     proxyListenAddr: asString(raw.configProxyListenAddr) || asString(raw.proxyListenAddr),
     modelAdapters: normalizeModelAdapters(raw.modelAdapters),
-    routing: {
-      mode: normalizeRouteMode(routing.mode),
-    },
     homeMetrics: {
       includeCacheWriteInHitRate: asBoolean(homeMetrics.includeCacheWriteInHitRate),
     },
@@ -594,7 +593,6 @@ function buildConfigPayload(source = appState) {
     backendListenAddr: normalized.backendListenAddr,
     proxyListenAddr: normalized.proxyListenAddr,
     modelAdapters: normalized.modelAdapters.map(({ id, ...adapter }) => adapter),
-    routing: normalized.routing,
     homeMetrics: normalized.homeMetrics,
     lastAgentModelHash: normalized.lastAgentModelHash,
   };
@@ -609,7 +607,6 @@ function applyConfigToState(config, { modelAdaptersOnly = false } = {}) {
   appState.modelAdapters = normalized.modelAdapters;
   appState.configBackendListenAddr = normalized.backendListenAddr;
   appState.configProxyListenAddr = normalized.proxyListenAddr;
-  appState.routingMode = normalized.routing.mode;
   appState.includeCacheWriteInHitRate = normalized.homeMetrics.includeCacheWriteInHitRate;
   return normalized;
 }
@@ -620,13 +617,6 @@ async function loadPersistedUserConfig() {
 
 async function persistConfigPayload(config, { modelAdaptersOnly = false } = {}) {
   const payload = buildConfigPayload(config);
-  const configValidationError = validateConfigPayload(payload);
-  if (configValidationError) {
-    return {
-      ok: false,
-      error: configValidationError,
-    };
-  }
   const validationError = validateModelAdapters(payload.modelAdapters);
   if (validationError) {
     return {
@@ -840,7 +830,6 @@ export const appState = reactive({
   modelAdapterTestResults: {},
   configBackendListenAddr: cachedConfig.backendListenAddr,
   configProxyListenAddr: cachedConfig.proxyListenAddr,
-  routingMode: cachedConfig.routing.mode,
   includeCacheWriteInHitRate: cachedConfig.homeMetrics.includeCacheWriteInHitRate,
 
   serviceRunning: asBoolean(cachedState.serviceRunning),
@@ -1128,9 +1117,6 @@ export async function persistUserConfig() {
   return persistConfigPayload({
     ...currentConfig,
     modelAdapters: normalizeModelAdapters(appState.modelAdapters),
-    routing: {
-      mode: appState.routingMode,
-    },
     homeMetrics: {
       ...currentConfig.homeMetrics,
       includeCacheWriteInHitRate: appState.includeCacheWriteInHitRate,
@@ -1154,16 +1140,6 @@ export async function saveIncludeCacheWriteInHitRate(value) {
     appState.includeCacheWriteInHitRate = previousValue;
   }
   return result;
-}
-
-export async function saveRoutingMode(mode) {
-  const currentConfig = await loadPersistedUserConfig();
-  return persistConfigPayload({
-    ...currentConfig,
-    routing: {
-      mode: normalizeRouteMode(mode),
-    },
-  });
 }
 
 export async function reloadUserConfig(options = {}) {
@@ -1201,6 +1177,13 @@ export async function saveModelAdapterAt(index, adapter) {
   };
 }
 
+export async function fetchAvailableModelIDs(payload) {
+  const result = await fetchModelAdapterModels(payload);
+  return asArray(result?.models)
+    .map((item) => asString(item))
+    .filter(Boolean);
+}
+
 export async function deleteModelAdapterAt(index) {
   const currentConfig = await loadPersistedUserConfig();
   const nextAdapters = normalizeModelAdapters(currentConfig.modelAdapters);
@@ -1214,6 +1197,39 @@ export async function deleteModelAdapterAt(index) {
 
   nextAdapters.splice(index, 1);
 
+  return persistConfigPayload(
+    {
+      ...currentConfig,
+      modelAdapters: nextAdapters,
+    },
+    { modelAdaptersOnly: true },
+  );
+}
+
+export async function saveModelAdapterOrder(adapterIDs) {
+  const orderedIDs = asArray(adapterIDs)
+    .map((item) => asString(item))
+    .filter(Boolean);
+  const currentConfig = await loadPersistedUserConfig();
+  const currentAdapters = normalizeModelAdapters(currentConfig.modelAdapters);
+  const adaptersByID = new Map(currentAdapters.map((adapter) => [adapter.id, adapter]));
+  const uniqueIDs = new Set(orderedIDs);
+
+  if (
+    orderedIDs.length !== currentAdapters.length
+    || uniqueIDs.size !== currentAdapters.length
+    || orderedIDs.some((id) => !adaptersByID.has(id))
+  ) {
+    return {
+      ok: false,
+      error: "模型配置已发生变化，请刷新后重试",
+    };
+  }
+
+  const nextAdapters = orderedIDs.map((id, index) => ({
+    ...adaptersByID.get(id),
+    sort: index + 1,
+  }));
   return persistConfigPayload(
     {
       ...currentConfig,
@@ -1364,11 +1380,6 @@ export async function openConfigWindow() {
 
 export async function openModelConfigWindow() {
   await openModelConfig();
-}
-
-export async function openModelEditorWindow(index, adapter) {
-  const adapterJSON = JSON.stringify(normalizeModelAdapter(adapter));
-  await openModelEditor(index, adapterJSON);
 }
 
 export async function checkForAppUpdates() {
