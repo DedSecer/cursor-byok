@@ -12,3 +12,8 @@ func EnsureCACertInstalled(_ []byte, certPath string) error {
 func RemoveCACertInstalled(_ []byte, _ string) error {
 	return fmt.Errorf("removeCACertInstalled: 当前平台暂不支持")
 }
+
+// EnsureLegacySharedCACertRemoved is a no-op on unsupported platforms.
+func EnsureLegacySharedCACertRemoved() error {
+	return nil
+}

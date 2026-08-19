@@ -1,6 +1,7 @@
 package certs
 
 import (
+	"bytes"
 	"crypto"
 	"crypto/ecdsa"
 	"crypto/ed25519"
@@ -11,9 +12,9 @@ import (
 	"crypto/x509/pkix"
 	"encoding/pem"
 	"errors"
+	"fmt"
 	"math/big"
 	"net"
-	"os"
 	"strings"
 	"sync"
 	"time"
@@ -25,11 +26,17 @@ type Manager struct {
 	caCert *x509.Certificate
 	// caKey 表示当前声明中的 caKey。
 	caKey crypto.PrivateKey
+	// caCertPEM 保存可注入宿主信任存储的 CA 证书，不包含私钥。
+	caCertPEM []byte
 
 	// mu 表示当前声明中的 mu。
 	mu sync.Mutex
 	// cache 表示当前声明中的 cache。
 	cache map[string]*tls.Certificate
+}
+
+func cloneBytes(value []byte) []byte {
+	return append([]byte(nil), value...)
 }
 
 // NewManager 用于处理与 NewManager 相关的逻辑。
@@ -47,7 +54,20 @@ func NewManagerFromPEM(caCertPEM, caKeyPEM []byte) (*Manager, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Manager{caCert: caCert, caKey: caKey, cache: make(map[string]*tls.Certificate)}, nil
+	return &Manager{
+		caCert:    caCert,
+		caKey:     caKey,
+		caCertPEM: cloneBytes(caCertPEM),
+		cache:     make(map[string]*tls.Certificate),
+	}, nil
+}
+
+// CACertPEM 返回当前 Manager 使用的 CA 证书。返回值不包含私钥。
+func (m *Manager) CACertPEM() []byte {
+	if m == nil {
+		return nil
+	}
+	return cloneBytes(m.caCertPEM)
 }
 
 // CATLSCertificate 用于处理与 CATLSCertificate 相关的逻辑。
@@ -159,19 +179,6 @@ func marshalPrivateKeyPEM(key any) ([]byte, error) {
 	}
 }
 
-// loadCAPEMFromFiles 用于处理与 loadCAPEMFromFiles 相关的逻辑。
-func loadCAPEMFromFiles(certPath, keyPath string) ([]byte, []byte, error) {
-	certPEM, err := os.ReadFile(certPath)
-	if err != nil {
-		return nil, nil, err
-	}
-	keyPEM, err := os.ReadFile(keyPath)
-	if err != nil {
-		return nil, nil, err
-	}
-	return certPEM, keyPEM, nil
-}
-
 // loadCAFromPEM 用于处理与 loadCAFromPEM 相关的逻辑。
 func loadCAFromPEM(certPEM, keyPEM []byte) (*x509.Certificate, crypto.PrivateKey, error) {
 	certBlock, _ := pem.Decode(certPEM)
@@ -188,28 +195,49 @@ func loadCAFromPEM(certPEM, keyPEM []byte) (*x509.Certificate, crypto.PrivateKey
 		return nil, nil, errors.New("invalid CA key PEM")
 	}
 
+	var caKey crypto.PrivateKey
 	switch keyBlock.Type {
 	case "RSA PRIVATE KEY":
 		key, err := x509.ParsePKCS1PrivateKey(keyBlock.Bytes)
 		if err != nil {
 			return nil, nil, err
 		}
-		return caCert, key, nil
+		caKey = key
 	case "EC PRIVATE KEY":
 		key, err := x509.ParseECPrivateKey(keyBlock.Bytes)
 		if err != nil {
 			return nil, nil, err
 		}
-		return caCert, key, nil
+		caKey = key
 	case "PRIVATE KEY":
 		key, err := x509.ParsePKCS8PrivateKey(keyBlock.Bytes)
 		if err != nil {
 			return nil, nil, err
 		}
-		return caCert, key, nil
+		caKey = key
 	default:
 		return nil, nil, errors.New("unsupported CA key format")
 	}
+
+	if !caCert.IsCA || !caCert.BasicConstraintsValid || caCert.KeyUsage&x509.KeyUsageCertSign == 0 {
+		return nil, nil, errors.New("certificate is not a valid signing CA")
+	}
+	signer, ok := caKey.(crypto.Signer)
+	if !ok {
+		return nil, nil, errors.New("CA private key cannot sign certificates")
+	}
+	certPublicKey, err := x509.MarshalPKIXPublicKey(caCert.PublicKey)
+	if err != nil {
+		return nil, nil, fmt.Errorf("marshal CA certificate public key: %w", err)
+	}
+	privatePublicKey, err := x509.MarshalPKIXPublicKey(signer.Public())
+	if err != nil {
+		return nil, nil, fmt.Errorf("marshal CA private key public key: %w", err)
+	}
+	if !bytes.Equal(certPublicKey, privatePublicKey) {
+		return nil, nil, errors.New("CA certificate and private key do not match")
+	}
+	return caCert, caKey, nil
 }
 
 // normalizeHost 用于处理与 normalizeHost 相关的逻辑。

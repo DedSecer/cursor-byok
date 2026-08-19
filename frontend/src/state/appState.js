@@ -3,11 +3,13 @@ import { Events } from "@wailsio/runtime";
 import dayjs from "dayjs";
 import {
   checkForUpdates,
+  exportUserConfig as exportUserConfigFile,
   getAppVersion,
   getHomeMetricsSummary,
   getModelAdapterTestResults,
   installReadyUpdate,
   getProxyState,
+  importUserConfig as importUserConfigFile,
   openConfigWindow as openConfig,
   loadUserConfig,
   openLogsDirectory,
@@ -18,11 +20,14 @@ import {
   testModelAdapter,
   fetchModelAdapterModels,
 } from "@/services/clientApi";
+import {
+  normalizeReasoningEffort,
+  SUPPORTED_REASONING_EFFORTS,
+} from "@/state/modelAdapterReasoning";
 
 const APP_STATE_STORAGE_KEY = "cursor-client:runtime-state:v2";
 const GENERIC_SERVICE_ERROR = "服务错误";
 const SUPPORTED_MODEL_ADAPTER_TYPES = new Set(["openai", "anthropic"]);
-const SUPPORTED_REASONING_EFFORTS = new Set(["low", "medium", "high", "xhigh", "max"]);
 const SUPPORTED_ANTHROPIC_THINKING_EFFORTS = new Set(["low", "medium", "high", "xhigh", "max"]);
 export const ANTHROPIC_THINKING_EFFORT_DEFAULT = "xhigh";
 export const OPENAI_ENDPOINT_RESPONSES = "/v1/responses";
@@ -165,7 +170,7 @@ export function buildModelAdapterTestRequestHash(source) {
     normalizeBaseURL(adapter.baseURL),
     asString(adapter.apiKey),
     asString(adapter.modelID),
-    adapter.type === "openai" ? asString(adapter.reasoningEffort || "medium") : "",
+    adapter.type === "openai" ? asString(adapter.reasoningEffort) : "",
     adapter.type === "openai" ? normalizeOpenAIEndpoint(adapter.openAIEndpoint) : "",
     adapter.type === "openai" ? String(Boolean(adapter.openAIExtraParamsEnabled)) : "false",
     adapter.type === "openai" && adapter.openAIExtraParamsEnabled ? asString(adapter.openAIExtraParamsJSON) : "",
@@ -254,7 +259,7 @@ export function createEmptyModelAdapter() {
     apiKey: "",
     tooltipData: "备注",
     modelID: "",
-    reasoningEffort: "medium",
+    reasoningEffort: "",
     openAIEndpoint: OPENAI_ENDPOINT_RESPONSES,
     openAIExtraParamsEnabled: false,
     openAIExtraParamsJSON: OPENAI_EXTRA_PARAMS_DEFAULT_JSON,
@@ -329,7 +334,7 @@ function validateAnthropicExtraParamsJSON(value) {
 export function normalizeModelAdapter(source) {
   const raw = source && typeof source === "object" ? source : {};
   const normalizedType = asString(raw.type).toLowerCase();
-  const normalizedReasoningEffort = asString(raw.reasoningEffort || raw.reasoning_effort).toLowerCase();
+  const normalizedReasoningEffort = normalizeReasoningEffort(raw.reasoningEffort ?? raw.reasoning_effort);
   const normalizedAnthropicThinkingEffort = asString(
     raw.anthropicThinkingEffort
       ?? raw.anthropic_thinking_effort
@@ -362,9 +367,7 @@ export function normalizeModelAdapter(source) {
     apiKey: asString(raw.apiKey || raw.key),
     tooltipData: asString(raw.tooltipData),
     modelID: asString(raw.modelID),
-    reasoningEffort: SUPPORTED_REASONING_EFFORTS.has(normalizedReasoningEffort)
-      ? normalizedReasoningEffort
-      : "medium",
+    reasoningEffort: normalizedReasoningEffort,
     openAIEndpoint: normalizedType === "openai" ? normalizedOpenAIEndpoint : "",
     openAIExtraParamsEnabled,
     openAIExtraParamsJSON,
@@ -442,7 +445,7 @@ export function validateModelAdapters(source) {
       return `${prefix} 的上下文窗口必须为正整数`;
     }
     if (adapter.type === "openai" && !SUPPORTED_REASONING_EFFORTS.has(adapter.reasoningEffort)) {
-      return `${prefix} 的推理强度仅支持 low、medium、high、xhigh、max`;
+      return `${prefix} 的推理强度仅支持不设置、low、medium、high、xhigh、max`;
     }
     if (adapter.type === "anthropic" && adapter.anthropicMaxTokens && (!Number.isInteger(adapter.anthropicMaxTokens) || adapter.anthropicMaxTokens <= 0)) {
       return `${prefix} 的最大输出 Token 必须为正整数`;
@@ -616,6 +619,9 @@ async function loadPersistedUserConfig() {
 }
 
 async function persistConfigPayload(config, { modelAdaptersOnly = false } = {}) {
+  if (appState.configSaving) {
+    return { ok: false, error: "已有配置操作正在进行，请稍后再试" };
+  }
   const payload = buildConfigPayload(config);
   const validationError = validateModelAdapters(payload.modelAdapters);
   if (validationError) {
@@ -1096,6 +1102,10 @@ export async function refreshModelAdapterTestResults() {
 
 export function startModelAdapterTest(adapter) {
   const normalized = normalizeModelAdapter(adapter);
+  const validationError = validateModelAdapters([normalized]);
+  if (validationError) {
+    return Promise.reject(new Error(validationError));
+  }
   return testModelAdapter(normalized).then((rawResult) => {
     const result = normalizeModelAdapterTestResult(rawResult);
     if (result.adapterID) {
@@ -1122,6 +1132,27 @@ export async function persistUserConfig() {
       includeCacheWriteInHitRate: appState.includeCacheWriteInHitRate,
     },
   });
+}
+
+export async function exportUserConfigToFile(path) {
+  return exportUserConfigFile(path);
+}
+
+export async function importUserConfigFromFile(path) {
+  if (appState.serviceRunning || appState.backendRunning || appState.proxyRunning) {
+    throw new Error("服务运行中不能导入完整配置，请先停止服务");
+  }
+  if (appState.configSaving) {
+    throw new Error("已有配置操作正在进行，请稍后再试");
+  }
+  appState.configSaving = true;
+  try {
+    const imported = normalizeConfig(await importUserConfigFile(path));
+    applyConfigToState(imported);
+    return imported;
+  } finally {
+    appState.configSaving = false;
+  }
 }
 
 export async function saveIncludeCacheWriteInHitRate(value) {

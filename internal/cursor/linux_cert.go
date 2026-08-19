@@ -54,6 +54,12 @@ func RemoveCACertInstalled(certPEM []byte, certPath string) error {
 	return runElevatedLinuxCATask("remove-ca", certPath, backend)
 }
 
+// EnsureLegacySharedCACertRemoved is a no-op because the shared CA releases
+// predated CC Switch's Linux trust-store integration.
+func EnsureLegacySharedCACertRemoved() error {
+	return nil
+}
+
 func runElevatedLinuxCATask(action, certPath string, backend linuxTrustBackend) error {
 	executable, err := os.Executable()
 	if err != nil {

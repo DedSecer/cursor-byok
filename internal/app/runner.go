@@ -2,10 +2,13 @@ package app
 
 import (
 	"context"
+	"crypto/sha256"
+	"crypto/x509"
+	"encoding/hex"
+	"encoding/pem"
 	"io/fs"
 	"net"
 	"os"
-	"path/filepath"
 	goruntime "runtime"
 	"strconv"
 	"strings"
@@ -67,8 +70,11 @@ func Run(resources EmbeddedResources) error {
 	logger.Init()
 	netproxy.InstallDefaultTransport()
 
+	if err := appdata.EnsureAssistantHome(); err != nil {
+		return err
+	}
 	certPath := appdata.CACertFilePath()
-	keyPath := filepath.Join(appdata.DataRootPath(), "ca.key")
+	keyPath := appdata.CAKeyFilePath()
 	if _, err := certs.RemoveCompromisedCA(certPath, keyPath, cursor.RemoveCACertInstalled); err != nil {
 		return err
 	}
@@ -76,6 +82,7 @@ func Run(resources EmbeddedResources) error {
 	if err != nil {
 		return err
 	}
+	logCAInfo(caCertPEM)
 
 	defaultBackendBaseURL := "http://" + serverconfig.DefaultBackendListenAddr
 	proxyServer, err := mitm.NewProxyServer(serverconfig.DefaultProxyListenAddr, defaultBackendBaseURL, "", "", certManager)
@@ -439,4 +446,33 @@ func browserReachableLoopbackBaseURL(listenAddr string) string {
 		host = "127.0.0.1"
 	}
 	return "http://" + net.JoinHostPort(host, port)
+}
+
+// logCAInfo 记录当前安装专属 CA 的公开信息。
+func logCAInfo(certPEM []byte) {
+	if len(certPEM) == 0 {
+		logger.Errorf("installation CA is empty")
+		return
+	}
+	cert, err := parseCert(certPEM)
+	if err != nil {
+		logger.Errorf("parse installation CA failed: %v", err)
+		return
+	}
+	sum := sha256.Sum256(cert.Raw)
+	logger.Infof(
+		"installation CA loaded: sha256=%s subject=%s valid=%s~%s",
+		strings.ToUpper(hex.EncodeToString(sum[:])),
+		cert.Subject.String(),
+		cert.NotBefore.Format(time.RFC3339),
+		cert.NotAfter.Format(time.RFC3339),
+	)
+}
+
+// parseCert 解析 DER 或 PEM 编码的证书。
+func parseCert(data []byte) (*x509.Certificate, error) {
+	if block, _ := pem.Decode(data); block != nil {
+		return x509.ParseCertificate(block.Bytes)
+	}
+	return x509.ParseCertificate(data)
 }
